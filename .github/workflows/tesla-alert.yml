@@ -46,8 +46,10 @@ jobs:
               print("🚗 Ouverture de Tesla...")
 
               browser = await uc.start(
-                  headless=True,
-                  browser_executable_path="/usr/bin/google-chrome"
+    headless=True,
+    no_sandbox=True,
+    browser_executable_path="/usr/bin/google-chrome"
+)
               )
 
               page = await browser.get(
