@@ -18,31 +18,35 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Installer les dépendances
+      - name: Installer requests
         run: |
           pip install requests
 
-      - name: Rechercher l'inventaire Tesla France
+      - name: Tesla Hunter
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
         run: |
           python - <<'PY'
           import json
           import os
           import requests
-          import urllib.parse
-          import hashlib
 
           BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
           CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-          MODELS = ["m3", "my", "ms", "mx"]
+          MODELS = {
+              "m3": "Model 3",
+              "my": "Model Y",
+              "ms": "Model S",
+              "mx": "Model X"
+          }
 
-          def telegram(message):
+          def send_telegram(message):
               url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-              r = requests.post(
+              response = requests.post(
                   url,
                   json={
                       "chat_id": CHAT_ID,
@@ -51,16 +55,21 @@ jobs:
                   timeout=20
               )
 
-              print("Telegram HTTP:", r.status_code)
+              print("Telegram HTTP:", response.status_code)
 
-              if r.status_code != 200:
-                  print(r.text)
+              if response.status_code != 200:
+                  print(response.text)
                   raise Exception("Erreur Telegram")
 
-          def search_model(model):
+          def search_tesla(model_code, model_name):
+
+              print(f"🔎 Recherche {model_name}...")
+
+              url = "https://www.tesla.com/inventory/api/v4/inventory-results"
+
               query = {
                   "query": {
-                      "model": model,
+                      "model": model_code,
                       "condition": "new",
                       "options": {},
                       "arrangeby": "Price",
@@ -79,21 +88,9 @@ jobs:
                   "version": "v2"
               }
 
-              params = {
-                  "query": json.dumps(
-                      query,
-                      separators=(",", ":")
-                  )
-              }
-
-              url = (
-                  "https://www.tesla.com/"
-                  "inventory/api/v4/inventory-results"
-              )
-
               headers = {
                   "User-Agent": (
-                      "Mozilla/5.0 (X11; Linux x86_64) "
+                      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                       "AppleWebKit/537.36 "
                       "(KHTML, like Gecko) "
                       "Chrome/139.0.0.0 Safari/537.36"
@@ -102,171 +99,137 @@ jobs:
                   "Accept-Language": "fr-FR,fr;q=0.9",
                   "Referer": (
                       f"https://www.tesla.com/"
-                      f"fr_fr/inventory/new/{model}"
+                      f"fr_fr/inventory/new/{model_code}"
                   )
               }
 
-              print(f"🔎 Recherche Model {model.upper()}...")
+              try:
+                  response = requests.get(
+                      url,
+                      params={
+                          "query": json.dumps(
+                              query,
+                              separators=(",", ":")
+                          )
+                      },
+                      headers=headers,
+                      timeout=30
+                  )
 
-              response = requests.get(
-                  url,
-                  params=params,
-                  headers=headers,
-                  timeout=30
-              )
-
-              print(
-                  f"Model {model.upper()} HTTP:",
-                  response.status_code
-              )
-
-              if response.status_code != 200:
                   print(
-                      "Réponse Tesla:",
-                      response.text[:500]
+                      f"{model_name} HTTP:",
+                      response.status_code
+                  )
+
+                  if response.status_code != 200:
+                      print(
+                          f"⚠️ Tesla bloque {model_name}: "
+                          f"HTTP {response.status_code}"
+                      )
+                      return []
+
+                  data = response.json()
+
+                  results = data.get("results", [])
+
+                  if isinstance(results, dict):
+                      results = results.get("results", [])
+
+                  if not isinstance(results, list):
+                      results = []
+
+                  print(
+                      f"➡️ {model_name}: "
+                      f"{len(results)} véhicule(s)"
+                  )
+
+                  return results
+
+              except Exception as error:
+                  print(
+                      f"⚠️ Erreur {model_name}: {error}"
                   )
                   return []
 
-              try:
-                  data = response.json()
-              except Exception:
-                  print("❌ Réponse Tesla non JSON")
-                  return []
-
-              if isinstance(data, dict):
-                  results = data.get("results", [])
-
-                  if not results:
-                      results = data.get(
-                          "response",
-                          []
-                      )
-
-                  if isinstance(results, dict):
-                      results = results.get(
-                          "results",
-                          []
-                      )
-
-                  if isinstance(results, list):
-                      return results
-
-              return []
-
+          print("")
           print("🚗 TESLA HUNTER")
           print("========================")
 
           all_cars = []
 
-          for model in MODELS:
-              try:
-                  cars = search_model(model)
-                  print(
-                      f"➡️ {model.upper()} : "
-                      f"{len(cars)} véhicule(s)"
-                  )
-                  all_cars.extend(cars)
-              except Exception as e:
-                  print(
-                      f"⚠️ Erreur Model {model.upper()} : {e}"
-                  )
+          for code, name in MODELS.items():
+              cars = search_tesla(code, name)
+
+              for car in cars:
+                  car["_hunter_model"] = name
+
+              all_cars.extend(cars)
 
           print("========================")
           print(
               f"🚘 TOTAL : {len(all_cars)} véhicule(s)"
           )
 
-          if not all_cars:
-              telegram(
+          if len(all_cars) == 0:
+
+              message = (
                   "🤖 TESLA HUNTER ACTIF 🇫🇷\n\n"
                   "✅ GitHub Actions fonctionne\n"
                   "✅ Telegram fonctionne\n"
-                  "🔎 Recherche inventaire Tesla France\n\n"
-                  "ℹ️ Aucun véhicule récupéré pour "
-                  "le moment.\n\n"
-                  "Le robot continue sa surveillance."
+                  "🔎 Recherche Model 3 / Y / S / X\n\n"
+                  "⚠️ Aucun véhicule récupéré "
+                  "lors de cette vérification.\n\n"
+                  "Le Hunter continue la surveillance."
               )
-              raise SystemExit(0)
 
-          messages = []
+              send_telegram(message)
 
-          for car in all_cars:
-              try:
-                  model = str(
-                      car.get("Model", car.get("model", "Tesla"))
+          else:
+
+              message = (
+                  "🚨 TESLA(S) TROUVÉE(S) 🇫🇷\n\n"
+                  f"🚘 {len(all_cars)} véhicule(s) détecté(s)\n\n"
+              )
+
+              for car in all_cars[:10]:
+
+                  model = car.get(
+                      "_hunter_model",
+                      "Tesla"
                   )
 
-                  price = car.get(
-                      "Price",
-                      car.get("price", "?")
+                  price = (
+                      car.get("Price")
+                      or car.get("price")
+                      or "Prix non disponible"
                   )
 
-                  vin = car.get(
-                      "VIN",
-                      car.get("vin", "")
-                  )
-
-                  city = car.get(
-                      "City",
-                      car.get("city", "")
-                  )
-
-                  exterior = car.get(
-                      "Paint",
-                      car.get("paint", "")
-                  )
-
-                  interior = car.get(
-                      "Interior",
-                      car.get("interior", "")
-                  )
-
-                  trim = car.get(
-                      "Trim",
-                      car.get("trim", "")
-                  )
-
-                  vehicle_url = (
-                      car.get("vehicleUrl")
-                      or car.get("VehicleURL")
-                      or car.get("url")
+                  vin = (
+                      car.get("VIN")
+                      or car.get("vin")
                       or ""
                   )
 
-                  if not vehicle_url and vin:
-                      vehicle_url = (
-                          "https://www.tesla.com/"
-                          "fr_fr/inventory/new/"
-                          f"{model.lower()}"
-                      )
-
-                  text = (
-                      "🚨 TESLA DISPONIBLE 🇫🇷\n\n"
-                      f"🚘 Modèle : {model}\n"
-                      f"💰 Prix : {price} €\n"
-                      f"🎨 Extérieur : {exterior}\n"
-                      f"🛋️ Intérieur : {interior}\n"
-                      f"⚙️ Version : {trim}\n"
-                      f"📍 Livraison : {city}\n"
+                  city = (
+                      car.get("City")
+                      or car.get("city")
+                      or ""
                   )
+
+                  message += (
+                      f"🚗 {model}\n"
+                      f"💰 {price} €\n"
+                  )
+
+                  if city:
+                      message += f"📍 {city}\n"
 
                   if vin:
-                      text += f"🔑 VIN : {vin}\n"
+                      message += f"🔑 VIN : {vin}\n"
 
-                  if vehicle_url:
-                      text += f"\n🔗 {vehicle_url}"
+                  message += "\n"
 
-                  messages.append(text)
-
-              except Exception as e:
-                  print(
-                      "⚠️ Impossible de lire un véhicule:",
-                      e
-                  )
-
-          if messages:
-              for message in messages[:20]:
-                  telegram(message)
+              send_telegram(message)
 
           print("📨 Surveillance terminée.")
           PY
