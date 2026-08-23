@@ -6,21 +6,29 @@ on:
     - cron: "*/10 * * * *"
 
 jobs:
-  tesla-hunter:
+  search-tesla:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
+
       - name: Installer Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Installer les dépendances
+      - name: Installer Chrome
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+
+      - name: Installer les dépendances Python
         run: |
           python -m pip install --upgrade pip
-          pip install nodriver requests curl-cffi
+          pip install nodriver requests curl_cffi
 
-      - name: Recherche Tesla
+      - name: Rechercher les Tesla neuves
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -51,14 +59,31 @@ jobs:
 
               print("🌐 Démarrage de Chrome...")
 
+              chrome_path = "/usr/bin/google-chrome-stable"
+
+              if not os.path.exists(chrome_path):
+                  raise Exception(
+                      f"Chrome introuvable : {chrome_path}"
+                  )
+
+              print(
+                  f"✅ Chrome trouvé : {chrome_path}"
+              )
+
               browser = await uc.start(
                   headless=True,
-                  no_sandbox=True,
+                  browser_executable_path=chrome_path,
+                  sandbox=False,
                   browser_args=[
                       "--no-sandbox",
                       "--disable-dev-shm-usage",
                       "--disable-gpu",
                       "--disable-software-rasterizer",
+                      "--disable-extensions",
+                      "--disable-background-networking",
+                      "--disable-sync",
+                      "--no-first-run",
+                      "--no-default-browser-check",
                       "--window-size=1920,1080",
                   ],
               )
@@ -113,14 +138,14 @@ jobs:
                       "lng": 2.3522,
                       "lat": 48.8566,
                       "zip": "75001",
-                      "range": 0
+                      "range": 0,
                   },
                   "offset": 0,
                   "count": 100,
                   "outsideOffset": 0,
                   "outsideSearch": False,
                   "isFalconDeliverySelectionEnabled": False,
-                  "version": "v2"
+                  "version": "v2",
               }
 
               url = (
@@ -131,7 +156,9 @@ jobs:
               headers = {
                   "accept": "application/json",
                   "accept-language": "fr-FR,fr;q=0.9",
-                  "referer": "https://www.tesla.com/fr_fr/inventory/new/",
+                  "referer": (
+                      "https://www.tesla.com/fr_fr/inventory/new/"
+                  ),
                   "user-agent": (
                       "Mozilla/5.0 (X11; Linux x86_64) "
                       "AppleWebKit/537.36 "
@@ -144,19 +171,29 @@ jobs:
                   f"🔎 Recherche {MODELS[model_code]}..."
               )
 
-              response = curl_requests.get(
-                  url,
-                  params={
-                      "query": json.dumps(
-                          query,
-                          separators=(",", ":")
-                      )
-                  },
-                  headers=headers,
-                  cookies=cookies,
-                  impersonate="chrome",
-                  timeout=30,
-              )
+              try:
+
+                  response = curl_requests.get(
+                      url,
+                      params={
+                          "query": json.dumps(
+                              query,
+                              separators=(",", ":"),
+                          )
+                      },
+                      headers=headers,
+                      cookies=cookies,
+                      impersonate="chrome",
+                      timeout=30,
+                  )
+
+              except Exception as e:
+
+                  print(
+                      f"❌ Erreur réseau Tesla : {e}"
+                  )
+
+                  return []
 
               print(
                   f"   HTTP {response.status_code}"
@@ -170,7 +207,7 @@ jobs:
 
                   print(
                       "   Réponse :",
-                      response.text[:500]
+                      response.text[:500],
                   )
 
                   return []
@@ -187,9 +224,16 @@ jobs:
 
                   return []
 
-              results = data.get("results", [])
+              results = data.get(
+                  "results",
+                  []
+              )
 
               if not isinstance(results, list):
+
+                  print(
+                      "   ⚠️ Format de réponse inattendu"
+                  )
 
                   return []
 
@@ -211,14 +255,14 @@ jobs:
                   url,
                   json={
                       "chat_id": CHAT_ID,
-                      "text": message
+                      "text": message,
                   },
-                  timeout=20
+                  timeout=20,
               )
 
               print(
                   "Telegram HTTP:",
-                  response.status_code
+                  response.status_code,
               )
 
               if response.status_code != 200:
@@ -250,25 +294,32 @@ jobs:
 
                   results = search_inventory(
                       model_code,
-                      cookies
+                      cookies,
                   )
 
                   for car in results:
 
                       condition = str(
-                          car.get("Condition", "")
+                          car.get(
+                              "Condition",
+                              "",
+                          )
                       ).lower()
 
-                      if condition not in ("", "new"):
-
+                      if condition not in (
+                          "",
+                          "new",
+                      ):
                           continue
 
                       found.append({
-                          "model": MODELS[model_code],
+                          "model": MODELS[
+                              model_code
+                          ],
 
                           "vin": car.get(
                               "VIN",
-                              ""
+                              "",
                           ),
 
                           "price": car.get(
@@ -277,27 +328,26 @@ jobs:
 
                           "trim": car.get(
                               "TrimName",
-                              "Version inconnue"
+                              "Version inconnue",
                           ),
 
                           "year": car.get(
                               "Year",
-                              ""
+                              "",
                           ),
 
                           "paint": car.get(
                               "Paint",
-                              ""
+                              "",
                           ),
 
                           "interior": car.get(
                               "Interior",
-                              ""
+                              "",
                           ),
                       })
 
               print("")
-
               print(
                   f"🚗 TOTAL : {len(found)} véhicule(s)"
               )
@@ -322,7 +372,7 @@ jobs:
 
                   if isinstance(
                       price,
-                      (int, float)
+                      (int, float),
                   ):
 
                       price_text = (
