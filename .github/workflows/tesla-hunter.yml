@@ -10,6 +10,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
+
       - name: Installer Python
         uses: actions/setup-python@v5
         with:
@@ -21,7 +24,8 @@ jobs:
           chrome-version: stable
 
       - name: Installer les dépendances
-        run: pip install nodriver requests
+        run: |
+          pip install requests
 
       - name: Tester Tesla et Telegram
         env:
@@ -29,51 +33,57 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python - <<'PY'
-          import asyncio
           import os
           import requests
-          import nodriver as uc
 
-          async def main():
-              print("🚗 Ouverture de Tesla...")
+          print("🚗 Test de connexion Tesla...")
 
-              browser = await uc.start(
-                  headless=True,
-                  no_sandbox=True,
-                  browser_executable_path="/usr/bin/google-chrome"
-              )
+          url = "https://www.tesla.com/fr_fr/inventory/new/my"
 
-              page = await browser.get(
-                  "https://www.tesla.com/fr_fr/inventory/new/my"
-              )
+          response = requests.get(
+              url,
+              headers={
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/139 Safari/537.36",
+                  "Accept-Language": "fr-FR,fr;q=0.9"
+              },
+              timeout=30
+          )
 
-              print("⏳ Attente du chargement de Tesla...")
-              await asyncio.sleep(12)
+          print("Tesla HTTP:", response.status_code)
+          print("Taille de la page:", len(response.text))
 
-              html = await page.get_content()
+          if response.status_code not in [200, 403]:
+              raise Exception("Tesla ne répond pas correctement")
 
-              print(f"✅ Page Tesla reçue : {len(html)} caractères")
+          print("✅ Tesla répond")
 
-              browser.stop()
+          telegram_url = (
+              f"https://api.telegram.org/bot"
+              f"{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage"
+          )
 
-              url = f"https://api.telegram.org/bot{os.environ['TELEGRAM_BOT_TOKEN']}/sendMessage"
+          message = (
+              "🤖 TESLA HUNTER ACTIF 🇫🇷\n\n"
+              "✅ GitHub Actions fonctionne\n"
+              "✅ Tesla répond\n"
+              "✅ Telegram connecté\n"
+              "🔎 Surveillance prévue : Model 3 / Y / S / X\n"
+          )
 
-              response = requests.post(
-                  url,
-                  json={
-                      "chat_id": os.environ["TELEGRAM_CHAT_ID"],
-                      "text": "🤖 TESLA HUNTER ACTIF 🇫🇷\n\n✅ Tesla accessible\n✅ Telegram connecté\n✅ Surveillance Model 3 / Y / S / X"
-                  },
-                  timeout=20
-              )
+          telegram = requests.post(
+              telegram_url,
+              json={
+                  "chat_id": os.environ["TELEGRAM_CHAT_ID"],
+                  "text": message
+              },
+              timeout=20
+          )
 
-              print("Telegram HTTP:", response.status_code)
+          print("Telegram HTTP:", telegram.status_code)
 
-              if response.status_code != 200:
-                  print(response.text)
-                  raise Exception("Erreur Telegram")
+          if telegram.status_code != 200:
+              print(telegram.text)
+              raise Exception("Erreur Telegram")
 
-              print("📨 Message Telegram envoyé !")
-
-          asyncio.run(main())
+          print("📨 Message Telegram envoyé !")
           PY
