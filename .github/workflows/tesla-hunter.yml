@@ -11,31 +11,24 @@ jobs:
 
     steps:
       - name: Installer Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Installer Chrome
-        uses: browser-actions/setup-chrome@v2
-        with:
-          chrome-version: stable
-
-      - name: Installer dépendances
+      - name: Installer les dépendances
         run: |
           python -m pip install --upgrade pip
-          pip install nodriver curl_cffi requests
+          pip install nodriver requests curl-cffi
 
-      - name: Tesla Hunter
+      - name: Recherche Tesla
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
         run: |
           python - <<'PY'
           import asyncio
           import json
           import os
-          import time
 
           import nodriver as uc
           import requests
@@ -44,6 +37,7 @@ jobs:
 
           BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
           CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+
 
           MODELS = {
               "m3": "Model 3",
@@ -59,10 +53,12 @@ jobs:
 
               browser = await uc.start(
                   headless=True,
+                  no_sandbox=True,
                   browser_args=[
                       "--no-sandbox",
                       "--disable-dev-shm-usage",
                       "--disable-gpu",
+                      "--disable-software-rasterizer",
                       "--window-size=1920,1080",
                   ],
               )
@@ -89,7 +85,9 @@ jobs:
                       except Exception:
                           pass
 
-                  print(f"🍪 {len(cookie_dict)} cookie(s) récupéré(s)")
+                  print(
+                      f"🍪 {len(cookie_dict)} cookie(s) récupéré(s)"
+                  )
 
                   return cookie_dict
 
@@ -142,7 +140,9 @@ jobs:
                   ),
               }
 
-              print(f"🔎 Recherche {MODELS[model_code]}...")
+              print(
+                  f"🔎 Recherche {MODELS[model_code]}..."
+              )
 
               response = curl_requests.get(
                   url,
@@ -163,20 +163,34 @@ jobs:
               )
 
               if response.status_code != 200:
+
                   print(
                       "   ⚠️ Tesla refuse encore la requête"
                   )
+
+                  print(
+                      "   Réponse :",
+                      response.text[:500]
+                  )
+
                   return []
 
               try:
+
                   data = response.json()
+
               except Exception:
-                  print("   ❌ Réponse Tesla non JSON")
+
+                  print(
+                      "   ❌ Réponse Tesla non JSON"
+                  )
+
                   return []
 
               results = data.get("results", [])
 
               if not isinstance(results, list):
+
                   return []
 
               print(
@@ -208,7 +222,9 @@ jobs:
               )
 
               if response.status_code != 200:
+
                   print(response.text)
+
                   raise Exception(
                       "Erreur Telegram"
                   )
@@ -223,6 +239,7 @@ jobs:
               cookies = await get_tesla_cookies()
 
               if not cookies:
+
                   raise Exception(
                       "Aucun cookie Tesla récupéré"
                   )
@@ -243,21 +260,36 @@ jobs:
                       ).lower()
 
                       if condition not in ("", "new"):
+
                           continue
 
                       found.append({
                           "model": MODELS[model_code],
-                          "vin": car.get("VIN", ""),
-                          "price": car.get("InventoryPrice"),
+
+                          "vin": car.get(
+                              "VIN",
+                              ""
+                          ),
+
+                          "price": car.get(
+                              "InventoryPrice"
+                          ),
+
                           "trim": car.get(
                               "TrimName",
                               "Version inconnue"
                           ),
-                          "year": car.get("Year", ""),
+
+                          "year": car.get(
+                              "Year",
+                              ""
+                          ),
+
                           "paint": car.get(
                               "Paint",
                               ""
                           ),
+
                           "interior": car.get(
                               "Interior",
                               ""
@@ -265,6 +297,7 @@ jobs:
                       })
 
               print("")
+
               print(
                   f"🚗 TOTAL : {len(found)} véhicule(s)"
               )
@@ -291,11 +324,14 @@ jobs:
                       price,
                       (int, float)
                   ):
+
                       price_text = (
                           f"{price:,.0f} €"
                           .replace(",", " ")
                       )
+
                   else:
+
                       price_text = (
                           "Prix indisponible"
                       )
@@ -307,21 +343,25 @@ jobs:
                   )
 
                   if car["year"]:
+
                       message += (
                           f"📅 {car['year']}\n"
                       )
 
                   if car["paint"]:
+
                       message += (
                           f"🎨 {car['paint']}\n"
                       )
 
                   if car["interior"]:
+
                       message += (
                           f"🛋️ {car['interior']}\n"
                       )
 
                   if car["vin"]:
+
                       message += (
                           f"🔑 VIN : {car['vin']}\n"
                       )
@@ -336,5 +376,4 @@ jobs:
 
 
           asyncio.run(main())
-
           PY
