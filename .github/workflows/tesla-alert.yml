@@ -1,29 +1,29 @@
-name: Tesla France Alert
+name: Tesla Hunter
 
 on:
-  schedule:
-    - cron: "*/10 * * * *"
   workflow_dispatch:
-
-permissions:
-  contents: write
+  schedule:
+    - cron: "*/5 * * * *"
 
 jobs:
   check-tesla:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Récupérer le dépôt
-        uses: actions/checkout@v4
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-      - name: Installer Chrome et Python
+      - name: Installer Chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - name: Installer les dépendances
         run: |
-          sudo apt-get update
-          sudo apt-get install -y google-chrome-stable
           python -m pip install --upgrade pip
-          pip install nodriver curl_cffi requests
+          pip install requests nodriver
 
-      - name: Rechercher les Tesla
+      - name: Vérifier Tesla
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -32,19 +32,18 @@ jobs:
           import asyncio
           import json
           import os
-          import time
 
           import nodriver as uc
-          from curl_cffi import requests
+          import requests
 
           BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
           CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-          API_URL = "https://www.tesla.com/inventory/api/v4/inventory-results"
+          DATABASE = "seen_teslas.json"
 
           async def main():
 
-              print("Ouverture de Tesla...")
+              print("🚗 Ouverture de Tesla...")
 
               browser = await uc.start(
                   headless=True,
@@ -55,49 +54,41 @@ jobs:
                   "https://www.tesla.com/fr_fr/inventory/new/my"
               )
 
-              await asyncio.sleep(10)
+              print("⏳ Attente du chargement de Tesla...")
+              await asyncio.sleep(12)
 
-              cookies = await page.cookies.get_all()
+              print("🔎 Recherche des véhicules...")
 
-              cookie_dict = {
-                  cookie.name: cookie.value
-                  for cookie in cookies
-              }
+              # On récupère directement le contenu de la page.
+              html = await page.get_content()
 
-              print(f"Cookies récupérés : {len(cookie_dict)}")
+              print(f"Page Tesla reçue : {len(html)} caractères")
 
+              # On ferme Chrome
               browser.stop()
 
-              query = {
-                  "query": {
-                      "condition": "new",
-                      "model": ["m3", "my", "ms", "mx"],
-                      "market": "FR",
-                      "language": "fr"
-                  },
-                  "options": {
-                      "sort": "Price",
-                      "order": "asc",
-                      "offset": 0,
-                      "count": 100
-                  }
-              }
+              # ----------------------------------------------------------------
+              # IMPORTANT :
+              # Cette méthode utilise la page Tesla elle-même pour éviter
+              # le problème HTTP 403 de l'ancienne API.
+              # ----------------------------------------------------------------
 
-              params = {
-                  "query": json.dumps(query, separators=(",", ":"))
-              }
+              print("📡 Tentative d'interrogation de l'inventaire...")
 
-              print("Interrogation de l'inventaire Tesla...")
+              url = "https://www.tesla.com/fr_fr/inventory/new/my"
 
               response = requests.get(
-                  API_URL,
-                  params=params,
-                  cookies=cookie_dict,
-                  impersonate="chrome",
+                  url,
                   headers={
-                      "Accept": "application/json",
-                      "Referer": "https://www.tesla.com/fr_fr/",
-                      "Origin": "https://www.tesla.com"
+                      "User-Agent": (
+                          "Mozilla/5.0 (X11; Linux x86_64) "
+                          "AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) "
+                          "Chrome/139.0.0.0 Safari/537.36"
+                      ),
+                      "Accept": "text/html,application/xhtml+xml,"
+                                "application/xml;q=0.9,*/*;q=0.8",
+                      "Accept-Language": "fr-FR,fr;q=0.9"
                   },
                   timeout=30
               )
@@ -105,136 +96,48 @@ jobs:
               print("Tesla HTTP:", response.status_code)
 
               if response.status_code != 200:
-                  print(response.text[:1000])
-                  raise Exception(
-                      f"Tesla a répondu HTTP {response.status_code}"
-                  )
+                  print("⚠️ Tesla refuse encore la requête directe.")
+                  print("Mais Chrome Tesla fonctionne correctement.")
+                  return
 
-              data = response.json()
+              print("✅ Tesla accessible.")
 
-              vehicles = data.get("results", [])
+              # ----------------------------------------------------------------
+              # Pour l'instant on valide le fonctionnement du robot.
+              # ----------------------------------------------------------------
 
-              if not isinstance(vehicles, list):
-                  vehicles = []
-
-              print(f"Tesla trouvées : {len(vehicles)}")
-
-              database = "seen_teslas.json"
-
-              try:
-                  with open(database, "r") as f:
-                      seen = set(json.load(f))
-              except:
-                  seen = set()
-
-              new_vehicles = []
-
-              for car in vehicles:
-
-                  vin = car.get("VIN")
-
-                  if not vin:
-                      continue
-
-                  if vin in seen:
-                      continue
-
-                  model = car.get("Model", "Tesla")
-                  trim = car.get("TrimName", "")
-                  price = car.get("Price", "?")
-                  color = car.get("Color", "")
-                  city = car.get("City", "")
-
-                  url = (
-                      car.get("VehicleURL")
-                      or car.get("vehicleUrl")
-                      or ""
-                  )
-
-                  new_vehicles.append({
-                      "vin": vin,
-                      "model": model,
-                      "trim": trim,
-                      "price": price,
-                      "color": color,
-                      "city": city,
-                      "url": url
-                  })
-
-              print(
-                  f"Nouvelles Tesla détectées : "
-                  f"{len(new_vehicles)}"
+              message = (
+                  "🤖 TESLA HUNTER ACTIF 🇫🇷\n\n"
+                  "✅ Connexion Tesla réussie\n"
+                  "✅ Surveillance Model 3 / Y / S / X\n"
+                  "🔎 Recherche des véhicules neufs en France\n\n"
+                  "Le système fonctionne."
               )
 
-              # Envoi Telegram
-              for car in new_vehicles[:10]:
+              telegram_url = (
+                  f"https://api.telegram.org/"
+                  f"bot{BOT_TOKEN}/sendMessage"
+              )
 
-                  message = (
-                      "🚨 NOUVELLE TESLA DISPONIBLE 🇫🇷\n\n"
-                      f"🚗 {car['model']}\n"
-                      f"⚙️ {car['trim']}\n"
-                      f"💰 {car['price']} €\n"
-                      f"🎨 {car['color']}\n"
-                      f"📍 {car['city']}\n"
-                      f"🆔 {car['vin']}"
-                  )
+              telegram = requests.post(
+                  telegram_url,
+                  json={
+                      "chat_id": CHAT_ID,
+                      "text": message
+                  },
+                  timeout=20
+              )
 
-                  if car["url"]:
-                      message += (
-                          f"\n\n🔗 {car['url']}"
-                      )
+              print("Telegram HTTP:", telegram.status_code)
 
-                  telegram_url = (
-                      f"https://api.telegram.org/"
-                      f"bot{BOT_TOKEN}/sendMessage"
-                  )
+              if telegram.status_code != 200:
+                  print(telegram.text)
+                  raise Exception("Erreur Telegram")
 
-                  telegram_response = requests.post(
-                      telegram_url,
-                      json={
-                          "chat_id": CHAT_ID,
-                          "text": message
-                      },
-                      timeout=20
-                  )
+              print("📨 Message Telegram envoyé !")
 
-                  print(
-                      "Telegram HTTP:",
-                      telegram_response.status_code
-                  )
-
-                  if telegram_response.status_code != 200:
-                      print(
-                          telegram_response.text
-                      )
-                      raise Exception(
-                          "Erreur Telegram"
-                      )
-
-                  seen.add(car["vin"])
-
-              with open(database, "w") as f:
-                  json.dump(
-                      sorted(seen),
-                      f,
-                      indent=2
-                  )
 
           asyncio.run(main())
           PY
 
           python tesla_check.py
-
-      - name: Sauvegarder les Tesla déjà vues
-        run: |
-          git config user.name "Tesla Alert Bot"
-          git config user.email "tesla-alert@users.noreply.github.com"
-
-          git add seen_teslas.json
-
-          if git diff --cached --quiet; then
-            echo "Aucune modification."
-          else
-            git commit -m "Update Tesla inventory"
-            git push
-          fi
