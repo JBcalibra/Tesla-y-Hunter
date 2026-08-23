@@ -1,1 +1,134 @@
+name: Tesla Stock Alert
 
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  check-tesla:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Vérifier les Tesla disponibles
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import os
+          import requests
+
+          BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+          CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+
+          MODELS = ["Model 3", "Model Y", "Model S", "Model X"]
+
+          # URL Tesla France
+          url = "https://www.tesla.com/inventory/api/v4/inventory-results"
+
+          params = {
+              "query": '{"query":{"model":["m3","my","ms","mx"],"condition":"new"},"options":{"sort":"Price","used":false},"offset":0,"count":100}',
+              "market": "FR",
+              "language": "fr",
+              "model": "m3,my,ms,mx",
+              "condition": "new",
+              "arrangeby": "plh",
+              "order": "asc",
+              "market": "FR"
+          }
+
+          headers = {
+              "User-Agent": "Mozilla/5.0",
+              "Accept": "application/json"
+          }
+
+          try:
+              response = requests.get(
+                  url,
+                  params=params,
+                  headers=headers,
+                  timeout=30
+              )
+
+              print("HTTP:", response.status_code)
+
+              if response.status_code != 200:
+                  raise Exception(
+                      f"Tesla API HTTP {response.status_code}: {response.text[:500]}"
+                  )
+
+              data = response.json()
+
+          except Exception as e:
+              print("Erreur Tesla:", e)
+              raise
+
+          results = data.get("results", [])
+
+          print(f"Véhicules trouvés : {len(results)}")
+
+          if not results:
+              print("Aucune Tesla neuve trouvée.")
+              exit(0)
+
+          messages = []
+
+          for car in results:
+              model = car.get("Model", car.get("model", "Tesla"))
+
+              if model not in MODELS:
+                  continue
+
+              vin = car.get("VIN", car.get("vin", ""))
+              price = car.get("Price", car.get("price", ""))
+              trim = car.get("TrimName", car.get("trimName", ""))
+              color = car.get("Color", car.get("color", ""))
+              city = car.get("City", car.get("city", ""))
+
+              vehicle_url = car.get("VehicleURL", car.get("vehicleUrl", ""))
+
+              message = (
+                  f"🚨 TESLA DISPONIBLE\n\n"
+                  f"🚗 {model}\n"
+                  f"⚙️ {trim}\n"
+                  f"💰 {price} €\n"
+                  f"🎨 {color}\n"
+                  f"📍 {city}\n"
+                  f"🆔 {vin}\n"
+              )
+
+              if vehicle_url:
+                  message += f"\n🔗 {vehicle_url}"
+
+              messages.append(message)
+
+          if not messages:
+              print("Aucun véhicule correspondant.")
+              exit(0)
+
+          # Limite Telegram : on évite d'envoyer des centaines de messages
+          messages = messages[:10]
+
+          for message in messages:
+              telegram_url = (
+                  f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+              )
+
+              payload = {
+                  "chat_id": CHAT_ID,
+                  "text": message
+              }
+
+              r = requests.post(
+                  telegram_url,
+                  json=payload,
+                  timeout=20
+              )
+
+              print("Telegram:", r.status_code)
+
+              if r.status_code != 200:
+                  print(r.text)
+
+          PY
