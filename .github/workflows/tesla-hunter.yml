@@ -1,341 +1,429 @@
 name: Tesla Hunter France
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   tesla-hunter:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Récupérer le code
+      - name: Récupérer le dépôt
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Installer Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Installer Chrome
-        uses: browser-actions/setup-chrome@v1
-
       - name: Installer les dépendances
         run: |
           python -m pip install --upgrade pip
-          pip install nodriver curl_cffi
+          pip install requests beautifulsoup4
 
-      - name: Tesla Hunter
+      - name: Rechercher les Tesla neuves
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python - <<'PY'
-          import asyncio
-          import json
           import os
-          import time
-          from urllib.parse import quote
+          import re
+          import json
+          import hashlib
+          import subprocess
+          from urllib.parse import urljoin
 
-          import nodriver as uc
-          from curl_cffi import requests
+          import requests
+          from bs4 import BeautifulSoup
 
+
+          # ============================================================
+          # CONFIGURATION
+          # ============================================================
+
+          SOURCE_URL = "https://tesla-info.com/inventory/France/All/New/"
+
+          MODELS = {
+              "Model 3",
+              "Model Y",
+              "Model S",
+              "Model X",
+          }
+
+          STATE_FILE = "tesla_seen.json"
 
           BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
           CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-          API_URL = "https://www.tesla.com/inventory/api/v4/inventory-results"
 
-          MODELS = {
-              "m3": "Model 3",
-              "my": "Model Y",
-              "ms": "Model S",
-              "mx": "Model X",
-          }
+          # ============================================================
+          # TELEGRAM
+          # ============================================================
 
-
-          def send_telegram(message):
+          def send_telegram(text):
               url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-              r = requests.post(
+              response = requests.post(
                   url,
                   json={
                       "chat_id": CHAT_ID,
-                      "text": message,
+                      "text": text,
                       "disable_web_page_preview": False,
                   },
                   timeout=20,
               )
 
-              print("Telegram HTTP:", r.status_code)
+              print("Telegram HTTP:", response.status_code)
 
-              if r.status_code != 200:
-                  print(r.text)
+              if response.status_code != 200:
+                  print(response.text)
                   raise RuntimeError("Erreur Telegram")
 
 
-          async def get_tesla_cookies():
-              print("🌐 Ouverture de Tesla avec Chrome...")
+          # ============================================================
+          # ETAT DES VEHICULES DEJA VUS
+          # ============================================================
 
-              browser = await uc.start(
-                  headless=True,
-                  browser_args=[
-                      "--no-sandbox",
-                      "--disable-dev-shm-usage",
-                      "--disable-gpu",
-                      "--window-size=1920,1080",
-                  ],
-              )
+          def load_seen():
+              if not os.path.exists(STATE_FILE):
+                  return set()
 
-              page = await browser.get(
-                  "https://www.tesla.com/fr_fr/inventory/new"
-              )
+              try:
+                  with open(STATE_FILE, "r", encoding="utf-8") as f:
+                      data = json.load(f)
 
-              print("⏳ Attente du chargement Tesla/Akamai...")
+                  return set(data)
 
-              await asyncio.sleep(12)
-
-              cookies = await page.send(
-                  uc.cdp.network.get_cookies()
-              )
-
-              result = {}
-
-              for cookie in cookies:
-                  try:
-                      result[cookie.name] = cookie.value
-                  except Exception:
-                      pass
-
-              print(f"🍪 Cookies récupérés : {len(result)}")
-
-              await browser.stop()
-
-              return result
+              except Exception:
+                  return set()
 
 
-          def search_inventory(model_code, cookies):
-              query = {
-                  "query": {
-                      "model": model_code,
-                      "condition": "new",
-                      "options": {},
-                      "arrangeby": "Price",
-                      "order": "asc",
-                      "market": "FR",
-                      "language": "fr",
-                      "super_region": "europe",
-                      "lng": 2.3522,
-                      "lat": 48.8566,
-                      "zip": "75001",
-                      "range": 0
-                  },
-                  "offset": 0,
-                  "count": 100,
-                  "outsideOffset": 0,
-                  "outsideSearch": False,
-                  "isFalconDeliverySelectionEnabled": True,
-                  "version": "v2"
-              }
-
-              encoded = quote(
-                  json.dumps(
-                      query,
-                      separators=(",", ":")
+          def save_seen(seen):
+              with open(STATE_FILE, "w", encoding="utf-8") as f:
+                  json.dump(
+                      sorted(seen),
+                      f,
+                      ensure_ascii=False,
+                      indent=2,
                   )
-              )
 
-              url = f"{API_URL}?query={encoded}"
 
-              headers = {
-                  "accept": "*/*",
-                  "accept-language": "fr-FR,fr;q=0.9,en;q=0.8",
-                  "referer": "https://www.tesla.com/fr_fr/inventory/new",
-                  "user-agent": (
-                      "Mozilla/5.0 (X11; Linux x86_64) "
-                      "AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) "
-                      "Chrome/139.0.0.0 Safari/537.36"
-                  ),
-              }
+          # ============================================================
+          # RECUPERATION TESLA-INFO
+          # ============================================================
 
-              print(f"🔎 Recherche {MODELS[model_code]}...")
+          headers = {
+              "User-Agent": (
+                  "Mozilla/5.0 (X11; Linux x86_64) "
+                  "AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) "
+                  "Chrome/139.0.0.0 Safari/537.36"
+              ),
+              "Accept": (
+                  "text/html,application/xhtml+xml,"
+                  "application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+              ),
+              "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+              "Referer": "https://tesla-info.com/",
+          }
 
-              r = requests.get(
-                  url,
+
+          print("=" * 60)
+          print("TESLA HUNTER FRANCE")
+          print("=" * 60)
+          print()
+          print("Source :", SOURCE_URL)
+          print("Modèles :", ", ".join(sorted(MODELS)))
+          print()
+
+
+          try:
+              response = requests.get(
+                  SOURCE_URL,
                   headers=headers,
-                  cookies=cookies,
-                  impersonate="chrome",
                   timeout=30,
               )
 
-              print(f"   HTTP {r.status_code}")
-
-              if r.status_code != 200:
-                  print(r.text[:1000])
-                  return None
-
-              try:
-                  data = r.json()
-              except Exception:
-                  print("❌ Réponse non JSON")
-                  print(r.text[:1000])
-                  return None
-
-              results = data.get("results", [])
-
-              if not isinstance(results, list):
-                  results = []
-
-              print(f"   ✅ {len(results)} véhicule(s)")
-
-              return results
-
-
-          print()
-          print("🤖 TESLA HUNTER FRANCE")
-          print("=" * 50)
-
-          cookies = asyncio.run(get_tesla_cookies())
-
-          if not cookies:
-              send_telegram(
-                  "⚠️ TESLA HUNTER 🇫🇷\n\n"
-                  "❌ Impossible de récupérer les cookies Tesla/Akamai.\n"
-                  "La recherche est annulée."
-              )
-
+          except Exception as e:
+              print("❌ Impossible de contacter Tesla-info")
+              print(e)
               raise SystemExit(1)
 
 
-          found = []
-          blocked = False
+          print("Tesla-info HTTP :", response.status_code)
+
+          if response.status_code != 200:
+              print(response.text[:1000])
+              raise SystemExit(1)
 
 
-          for model_code in MODELS:
+          html = response.text
 
-              results = search_inventory(
-                  model_code,
-                  cookies
+          print("Taille HTML :", len(html), "octets")
+
+
+          # ============================================================
+          # PARSING
+          # ============================================================
+
+          soup = BeautifulSoup(html, "html.parser")
+
+          vehicles = []
+
+
+          # On recherche les liens de véhicules.
+          # Tesla-info peut modifier légèrement sa structure :
+          # on utilise donc plusieurs méthodes de détection.
+
+          for link in soup.find_all("a", href=True):
+
+              href = link.get("href", "").strip()
+
+              text = " ".join(
+                  link.stripped_strings
+              ).strip()
+
+              if not text:
+                  continue
+
+              absolute_url = urljoin(
+                  SOURCE_URL,
+                  href,
               )
 
-              if results is None:
-                  blocked = True
+              lower_text = text.lower()
+
+              # --------------------------------------------------------
+              # Détection du modèle
+              # --------------------------------------------------------
+
+              model = None
+
+              for candidate in MODELS:
+                  if candidate.lower() in lower_text:
+                      model = candidate
+                      break
+
+              if model is None:
                   continue
 
 
-              for car in results:
+              # --------------------------------------------------------
+              # On évite les liens de navigation
+              # --------------------------------------------------------
 
-                  condition = str(
-                      car.get("Condition", "")
-                  ).lower()
+              if "/inventory/" not in absolute_url.lower():
+                  continue
 
-                  if condition not in ("", "new"):
-                      continue
 
-                  found.append({
-                      "model": MODELS[model_code],
-                      "vin": car.get("VIN", ""),
-                      "price": car.get("InventoryPrice"),
-                      "trim": car.get(
-                          "TrimName",
-                          "Version inconnue"
-                      ),
-                      "year": car.get("Year", ""),
-                      "paint": car.get(
-                          "Paint",
-                          car.get("PAINT", "")
-                      ),
-                      "interior": car.get(
-                          "Interior",
-                          ""
-                      ),
-                      "location": car.get(
-                          "DeliveryLocation",
-                          car.get("City", "")
-                      ),
-                      "url": car.get(
-                          "InventoryLink",
-                          ""
-                      ),
-                  })
+              # --------------------------------------------------------
+              # Recherche du prix
+              # --------------------------------------------------------
+
+              price_match = re.search(
+                  r"(\d[\d\s.,]{2,})\s*€",
+                  text
+              )
+
+              price = ""
+
+              if price_match:
+                  price = price_match.group(1).strip() + " €"
+
+
+              # --------------------------------------------------------
+              # Identification unique
+              # --------------------------------------------------------
+
+              unique_source = (
+                  absolute_url
+                  + "|"
+                  + text
+              )
+
+              vehicle_id = hashlib.sha256(
+                  unique_source.encode("utf-8")
+              ).hexdigest()
+
+
+              vehicles.append({
+                  "id": vehicle_id,
+                  "model": model,
+                  "text": text,
+                  "url": absolute_url,
+                  "price": price,
+              })
+
+
+          # ============================================================
+          # SUPPRESSION DES DOUBLONS
+          # ============================================================
+
+          unique = {}
+
+          for vehicle in vehicles:
+              unique[vehicle["id"]] = vehicle
+
+          vehicles = list(unique.values())
 
 
           print()
-          print("=" * 50)
-          print(f"🚗 TOTAL : {len(found)} Tesla neuve(s)")
-          print("=" * 50)
+          print("Véhicules détectés :", len(vehicles))
+          print()
 
 
-          if blocked and not found:
+          # ============================================================
+          # ETAT
+          # ============================================================
 
-              send_telegram(
-                  "⚠️ TESLA HUNTER 🇫🇷\n\n"
-                  "🚫 Tesla/Akamai a bloqué la recherche.\n\n"
-                  "Aucune alerte de disponibilité "
-                  "n'est envoyée."
-              )
+          seen = load_seen()
 
-              raise SystemExit(0)
+          print("Véhicules déjà vus :", len(seen))
 
 
-          if not found:
+          new_vehicles = [
+              vehicle
+              for vehicle in vehicles
+              if vehicle["id"] not in seen
+          ]
 
-              print("ℹ️ Aucune Tesla neuve détectée.")
 
-              raise SystemExit(0)
+          # ============================================================
+          # PREMIERE EXECUTION
+          # ============================================================
+          #
+          # Important :
+          # lors du premier lancement, on mémorise les voitures
+          # existantes sans envoyer 50 alertes Telegram.
+          #
+
+          if not seen:
+
+              print()
+              print("ℹ️ Première exécution.")
+              print("Les véhicules actuels sont mémorisés.")
+              print("Aucune alerte massive ne sera envoyée.")
+
+              for vehicle in vehicles:
+                  seen.add(vehicle["id"])
+
+              save_seen(seen)
+
+          else:
+
+              print()
+              print("🆕 Nouveaux véhicules :", len(new_vehicles))
 
 
-          message = (
-              "🚨 TESLA DISPONIBLE ! 🇫🇷\n\n"
-              f"🚗 {len(found)} Tesla neuve(s) détectée(s)\n\n"
+              # ========================================================
+              # ALERTES
+              # ========================================================
+
+              for vehicle in new_vehicles:
+
+                  message = (
+                      "🚨 TESLA DISPONIBLE 🇫🇷\n\n"
+                      f"🚗 {vehicle['model']}\n"
+                  )
+
+                  if vehicle["price"]:
+                      message += (
+                          f"💰 {vehicle['price']}\n"
+                      )
+
+                  message += (
+                      f"\n📋 {vehicle['text']}\n\n"
+                      f"🔗 {vehicle['url']}"
+                  )
+
+
+                  print()
+                  print("-" * 60)
+                  print(message)
+                  print("-" * 60)
+
+
+                  send_telegram(message)
+
+                  seen.add(vehicle["id"])
+
+
+              save_seen(seen)
+
+
+          # ============================================================
+          # SAUVEGARDE DANS GITHUB
+          # ============================================================
+
+          subprocess.run(
+              ["git", "config", "user.name", "Tesla Hunter"],
+              check=True,
+          )
+
+          subprocess.run(
+              [
+                  "git",
+                  "config",
+                  "user.email",
+                  "tesla-hunter@users.noreply.github.com",
+              ],
+              check=True,
           )
 
 
-          for car in found[:15]:
-
-              price = car["price"]
-
-              if isinstance(price, (int, float)):
-                  price_text = (
-                      f"{price:,.0f} €"
-                      .replace(",", " ")
-                  )
-              else:
-                  price_text = "Prix indisponible"
+          subprocess.run(
+              ["git", "add", STATE_FILE],
+              check=True,
+          )
 
 
-              message += (
-                  f"⚡ {car['model']}\n"
-                  f"💰 {price_text}\n"
-                  f"🏷️ {car['trim']}\n"
+          result = subprocess.run(
+              [
+                  "git",
+                  "diff",
+                  "--cached",
+                  "--quiet",
+              ]
+          )
+
+
+          if result.returncode != 0:
+
+              subprocess.run(
+                  [
+                      "git",
+                      "commit",
+                      "-m",
+                      "Update Tesla Hunter state",
+                  ],
+                  check=True,
               )
 
+              subprocess.run(
+                  ["git", "push"],
+                  check=True,
+              )
 
-              if car["year"]:
-                  message += f"📅 {car['year']}\n"
+              print()
+              print("✅ Etat sauvegardé dans GitHub.")
 
-              if car["paint"]:
-                  message += f"🎨 {car['paint']}\n"
+          else:
 
-              if car["interior"]:
-                  message += f"🛋️ {car['interior']}\n"
-
-              if car["location"]:
-                  message += f"📍 {car['location']}\n"
-
-              if car["vin"]:
-                  message += f"🔑 VIN : {car['vin']}\n"
-
-              if car["url"]:
-                  message += f"🔗 {car['url']}\n"
-
-              message += "\n"
+              print()
+              print("ℹ️ Aucun changement à sauvegarder.")
 
 
-          send_telegram(message)
-
-          print("✅ Alerte Telegram envoyée !")
+          print()
+          print("=" * 60)
+          print("✅ TESLA HUNTER TERMINÉ")
+          print("=" * 60)
 
           PY
