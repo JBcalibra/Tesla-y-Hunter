@@ -1,145 +1,112 @@
-name: Tesla Hunter
+import asyncio
+import json
+import os
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: "*/5 * * * *"
-
-jobs:
-  check-tesla:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Installer Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Installer Chrome
-        uses: browser-actions/setup-chrome@v1
-
-      - name: Installer les dépendances
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests nodriver
-
-      - name: Vérifier Tesla
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          cat > tesla_check.py <<'PY'
-          import asyncio
-          import json
-          import os
-
-          import nodriver as uc
-          import requests
-
-          BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-          CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-
-          DATABASE = "seen_teslas.json"
-
-          async def main():
-
-              print("🚗 Ouverture de Tesla...")
-
-              browser = await uc.start(
-    headless=True,
-    no_sandbox=True,
-    browser_executable_path="/usr/bin/google-chrome"
-)
-            
-
-              page = await browser.get(
-                  "https://www.tesla.com/fr_fr/inventory/new/my"
-              )
-
-              print("⏳ Attente du chargement de Tesla...")
-              await asyncio.sleep(12)
-
-              print("🔎 Recherche des véhicules...")
-
-              # On récupère directement le contenu de la page.
-              html = await page.get_content()
-
-              print(f"Page Tesla reçue : {len(html)} caractères")
-
-              # On ferme Chrome
-              browser.stop()
-
-              # ----------------------------------------------------------------
-              # IMPORTANT :
-              # Cette méthode utilise la page Tesla elle-même pour éviter
-              # le problème HTTP 403 de l'ancienne API.
-              # ----------------------------------------------------------------
-
-              print("📡 Tentative d'interrogation de l'inventaire...")
-
-              url = "https://www.tesla.com/fr_fr/inventory/new/my"
-
-              response = requests.get(
-                  url,
-                  headers={
-                      "User-Agent": (
-                          "Mozilla/5.0 (X11; Linux x86_64) "
-                          "AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) "
-                          "Chrome/139.0.0.0 Safari/537.36"
-                      ),
-                      "Accept": "text/html,application/xhtml+xml,"
-                                "application/xml;q=0.9,*/*;q=0.8",
-                      "Accept-Language": "fr-FR,fr;q=0.9"
-                  },
-                  timeout=30
-              )
-
-              print("Tesla HTTP:", response.status_code)
-
-              if response.status_code != 200:
-                  print("⚠️ Tesla refuse encore la requête directe.")
-                  print("Mais Chrome Tesla fonctionne correctement.")
-                  return
-
-              print("✅ Tesla accessible.")
-
-              # ----------------------------------------------------------------
-              # Pour l'instant on valide le fonctionnement du robot.
-              # ----------------------------------------------------------------
-
-              message = (
-                  "🤖 TESLA HUNTER ACTIF 🇫🇷\n\n"
-                  "✅ Connexion Tesla réussie\n"
-                  "✅ Surveillance Model 3 / Y / S / X\n"
-                  "🔎 Recherche des véhicules neufs en France\n\n"
-                  "Le système fonctionne."
-              )
-
-              telegram_url = (
-                  f"https://api.telegram.org/"
-                  f"bot{BOT_TOKEN}/sendMessage"
-              )
-
-              telegram = requests.post(
-                  telegram_url,
-                  json={
-                      "chat_id": CHAT_ID,
-                      "text": message
-                  },
-                  timeout=20
-              )
-
-              print("Telegram HTTP:", telegram.status_code)
-
-              if telegram.status_code != 200:
-                  print(telegram.text)
-                  raise Exception("Erreur Telegram")
-
-              print("📨 Message Telegram envoyé !")
+import nodriver as uc
+import requests
 
 
-          asyncio.run(main())
-          PY
+BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-          python tesla_check.py
+DATABASE = "seen_teslas.json"
+
+
+async def main():
+
+    print("🚗 Ouverture de Tesla...")
+
+    browser = await uc.start(
+        headless=True,
+        no_sandbox=True,
+        browser_executable_path="/usr/bin/google-chrome"
+    )
+
+    page = await browser.get(
+        "https://www.tesla.com/fr_fr/inventory/new/my"
+    )
+
+    print("⏳ Attente du chargement de Tesla...")
+    await asyncio.sleep(12)
+
+    print("🔎 Recherche des véhicules...")
+
+    # Récupération du contenu de la page Tesla
+    html = await page.get_content()
+
+    print(f"Page Tesla reçue : {len(html)} caractères")
+
+    # Fermeture de Chrome
+    browser.stop()
+
+    # ---------------------------------------------------------
+    # Vérification de l'accès direct à Tesla
+    # ---------------------------------------------------------
+
+    print("📡 Tentative d'interrogation de l'inventaire...")
+
+    url = "https://www.tesla.com/fr_fr/inventory/new/my"
+
+    response = requests.get(
+        url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) "
+                "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
+                "Chrome/139.0.0.0 Safari/537.36"
+            ),
+            "Accept": (
+                "text/html,application/xhtml+xml,"
+                "application/xml;q=0.9,*/*;q=0.8"
+            ),
+            "Accept-Language": "fr-FR,fr;q=0.9"
+        },
+        timeout=30
+    )
+
+    print("Tesla HTTP:", response.status_code)
+
+    if response.status_code != 200:
+        print("⚠️ Tesla refuse encore la requête directe.")
+        print("Mais Chrome Tesla fonctionne correctement.")
+        return
+
+    print("✅ Tesla accessible.")
+
+    # ---------------------------------------------------------
+    # Test Telegram
+    # ---------------------------------------------------------
+
+    message = (
+        "🤖 TESLA HUNTER ACTIF 🇫🇷\n\n"
+        "✅ Connexion Tesla réussie\n"
+        "✅ Surveillance Model 3 / Y / S / X\n"
+        "🔎 Recherche des véhicules neufs en France\n\n"
+        "Le système fonctionne."
+    )
+
+    telegram_url = (
+        f"https://api.telegram.org/"
+        f"bot{BOT_TOKEN}/sendMessage"
+    )
+
+    telegram = requests.post(
+        telegram_url,
+        json={
+            "chat_id": CHAT_ID,
+            "text": message
+        },
+        timeout=20
+    )
+
+    print("Telegram HTTP:", telegram.status_code)
+
+    if telegram.status_code != 200:
+        print(telegram.text)
+        raise Exception("Erreur Telegram")
+
+    print("📨 Message Telegram envoyé !")
+
+
+asyncio.run(main())
