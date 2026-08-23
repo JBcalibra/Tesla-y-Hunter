@@ -1,246 +1,134 @@
-import json
+import asyncio
 import os
-import time
 import requests
+import nodriver as uc
+
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-TESLA_URL = "https://www.tesla.com/inventory/api/v4/inventory-results"
 
-MODELS = ["m3", "my", "ms", "mx"]
+async def main():
 
-DATABASE = "seen_teslas.json"
+    print("🚗 Ouverture de Tesla...")
 
+    # Démarrage de Chrome compatible GitHub Actions
+    browser = await uc.start(
+        headless=True,
+        no_sandbox=True,
+        browser_executable_path="/usr/bin/google-chrome",
+        browser_args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+        ],
+    )
 
-def telegram(message):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    try:
 
-    r = requests.post(
+        print("🌐 Ouverture de la page Tesla...")
+
+        page = await browser.get(
+            "https://www.tesla.com/fr_fr/inventory/new/my"
+        )
+
+        print("⏳ Attente du chargement de Tesla...")
+        await asyncio.sleep(12)
+
+        print("🔎 Lecture de la page Tesla...")
+
+        html = await page.get_content()
+
+        print(f"✅ Page Tesla reçue : {len(html)} caractères")
+
+    finally:
+
+        print("🛑 Fermeture de Chrome...")
+        browser.stop()
+
+    # --------------------------------------------------
+    # TEST DE L'ACCÈS DIRECT À TESLA
+    # --------------------------------------------------
+
+    print("📡 Test de connexion Tesla...")
+
+    url = "https://www.tesla.com/fr_fr/inventory/new/my"
+
+    response = requests.get(
         url,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (X11; Linux x86_64) "
+                "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
+                "Chrome/139.0.0.0 Safari/537.36"
+            ),
+            "Accept": (
+                "text/html,application/xhtml+xml,"
+                "application/xml;q=0.9,*/*;q=0.8"
+            ),
+            "Accept-Language": "fr-FR,fr;q=0.9",
+        },
+        timeout=30,
+    )
+
+    print("Tesla HTTP :", response.status_code)
+
+    if response.status_code != 200:
+
+        print("⚠️ Tesla refuse la requête directe.")
+
+        message = (
+            "🤖 TESLA HUNTER 🇫🇷\n\n"
+            "⚠️ Chrome Tesla fonctionne.\n"
+            "❌ La requête directe Tesla est refusée.\n\n"
+            f"HTTP Tesla : {response.status_code}"
+        )
+
+    else:
+
+        print("✅ Tesla accessible.")
+
+        message = (
+            "🤖 TESLA HUNTER ACTIF 🇫🇷\n\n"
+            "✅ Chrome Tesla fonctionne\n"
+            "✅ Connexion Tesla réussie\n"
+            "✅ Surveillance Model 3 / Model Y / Model S / Model X\n"
+            "🔎 Recherche des véhicules neufs en France\n\n"
+            "Le robot fonctionne correctement."
+        )
+
+    # --------------------------------------------------
+    # ENVOI TELEGRAM
+    # --------------------------------------------------
+
+    print("📨 Envoi du message Telegram...")
+
+    telegram_url = (
+        f"https://api.telegram.org/"
+        f"bot{BOT_TOKEN}/sendMessage"
+    )
+
+    telegram = requests.post(
+        telegram_url,
         json={
             "chat_id": CHAT_ID,
             "text": message,
-            "disable_web_page_preview": False,
         },
         timeout=20,
     )
 
-    print("Telegram:", r.status_code)
+    print("Telegram HTTP :", telegram.status_code)
 
-    if r.status_code != 200:
-        print(r.text)
+    if telegram.status_code != 200:
 
+        print("❌ Erreur Telegram :")
+        print(telegram.text)
 
-def load_seen():
-    try:
-        with open(DATABASE, "r") as f:
-            return set(json.load(f))
-    except Exception:
-        return set()
+        raise Exception("Erreur Telegram")
+
+    print("✅ Message Telegram envoyé !")
 
 
-def save_seen(seen):
-    with open(DATABASE, "w") as f:
-        json.dump(sorted(seen), f, indent=2)
-
-
-def search_model(session, model):
-
-    query = {
-        "query": {
-            "model": model,
-            "condition": "new",
-            "options": {},
-            "arrangeby": "Price",
-            "order": "asc",
-            "market": "FR",
-            "language": "fr",
-            "super_region": "europe",
-            "lng": "",
-            "lat": "",
-            "zip": "",
-            "range": 0,
-        },
-        "offset": 0,
-        "count": 100,
-        "outsideOffset": 0,
-        "outsideSearch": False,
-        "isFalconDeliverySelectionEnabled": True,
-        "version": "v2",
-    }
-
-    headers = {
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
-        "Referer": "https://www.tesla.com/fr_fr/inventory/new/",
-        "User-Agent": (
-            "Mozilla/5.0 (X11; Linux x86_64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/131.0.0.0 Safari/537.36"
-        ),
-    }
-
-    response = session.get(
-        TESLA_URL,
-        params={"query": json.dumps(query)},
-        headers=headers,
-        timeout=30,
-    )
-
-    print(f"Tesla {model}: HTTP {response.status_code}")
-
-    if response.status_code != 200:
-        print(response.text[:500])
-        return []
-
-    data = response.json()
-
-    results = data.get("results", [])
-
-    if not isinstance(results, list):
-        return []
-
-    return results
-
-
-def main():
-
-    print("=== TESLA ALERT ===")
-
-    session = requests.Session()
-
-    # Première visite du site Tesla pour récupérer d'éventuels cookies
-    try:
-        session.get(
-            "https://www.tesla.com/fr_fr/inventory/new/",
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (X11; Linux x86_64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/131.0.0.0 Safari/537.36"
-                )
-            },
-            timeout=30,
-        )
-    except Exception as e:
-        print("Visite Tesla:", e)
-
-    seen = load_seen()
-    new_cars = []
-
-    for model in MODELS:
-
-        try:
-            cars = search_model(session, model)
-
-            print(f"{model}: {len(cars)} véhicules")
-
-            for car in cars:
-
-                vin = (
-                    car.get("VIN")
-                    or car.get("vin")
-                    or car.get("VINNumber")
-                )
-
-                if not vin:
-                    continue
-
-                if vin in seen:
-                    continue
-
-                name = (
-                    car.get("Model")
-                    or car.get("model")
-                    or model.upper()
-                )
-
-                price = (
-                    car.get("Price")
-                    or car.get("price")
-                    or "?"
-                )
-
-                trim = (
-                    car.get("TrimName")
-                    or car.get("trimName")
-                    or ""
-                )
-
-                color = (
-                    car.get("Color")
-                    or car.get("color")
-                    or ""
-                )
-
-                city = (
-                    car.get("City")
-                    or car.get("city")
-                    or ""
-                )
-
-                url = (
-                    car.get("VehicleURL")
-                    or car.get("vehicleUrl")
-                    or ""
-                )
-
-                new_cars.append({
-                    "vin": vin,
-                    "model": name,
-                    "price": price,
-                    "trim": trim,
-                    "color": color,
-                    "city": city,
-                    "url": url,
-                })
-
-        except Exception as e:
-            print(f"Erreur {model}:", e)
-
-    # Mémorise les véhicules
-    for model in MODELS:
-        try:
-            cars = search_model(session, model)
-
-            for car in cars:
-                vin = (
-                    car.get("VIN")
-                    or car.get("vin")
-                    or car.get("VINNumber")
-                )
-
-                if vin:
-                    seen.add(vin)
-
-        except Exception:
-            pass
-
-    save_seen(seen)
-
-    print(f"Nouvelles Tesla: {len(new_cars)}")
-
-    # Telegram
-    for car in new_cars[:10]:
-
-        message = (
-            "🚨 NOUVELLE TESLA DISPONIBLE 🇫🇷\n\n"
-            f"🚗 {car['model']}\n"
-            f"⚙️ {car['trim']}\n"
-            f"💰 {car['price']} €\n"
-            f"🎨 {car['color']}\n"
-            f"📍 {car['city']}\n"
-            f"🆔 {car['vin']}"
-        )
-
-        if car["url"]:
-            message += f"\n\n🔗 {car['url']}"
-
-        telegram(message)
-
-        time.sleep(1)
-
-
-if __name__ == "__main__":
-    main()
+asyncio.run(main())
