@@ -1,134 +1,331 @@
 import asyncio
+import json
 import os
-import requests
+from urllib.parse import quote
+
 import nodriver as uc
+from curl_cffi import requests
 
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
+API_URL = "https://www.tesla.com/inventory/api/v4/inventory-results"
 
-async def main():
+MODELS = {
+    "m3": "Model 3",
+    "my": "Model Y",
+    "ms": "Model S",
+    "mx": "Model X",
+}
 
-    print("🚗 Ouverture de Tesla...")
 
-    # Démarrage de Chrome compatible GitHub Actions
-    browser = await uc.start(
-        headless=True,
-        no_sandbox=True,
-        browser_executable_path="/usr/bin/google-chrome",
-        browser_args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-software-rasterizer",
-        ],
-    )
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-    try:
-
-        print("🌐 Ouverture de la page Tesla...")
-
-        page = await browser.get(
-            "https://www.tesla.com/fr_fr/inventory/new/my"
-        )
-
-        print("⏳ Attente du chargement de Tesla...")
-        await asyncio.sleep(12)
-
-        print("🔎 Lecture de la page Tesla...")
-
-        html = await page.get_content()
-
-        print(f"✅ Page Tesla reçue : {len(html)} caractères")
-
-    finally:
-
-        print("🛑 Fermeture de Chrome...")
-        browser.stop()
-
-    # --------------------------------------------------
-    # TEST DE L'ACCÈS DIRECT À TESLA
-    # --------------------------------------------------
-
-    print("📡 Test de connexion Tesla...")
-
-    url = "https://www.tesla.com/fr_fr/inventory/new/my"
-
-    response = requests.get(
+    r = requests.post(
         url,
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (X11; Linux x86_64) "
-                "AppleWebKit/537.36 "
-                "(KHTML, like Gecko) "
-                "Chrome/139.0.0.0 Safari/537.36"
-            ),
-            "Accept": (
-                "text/html,application/xhtml+xml,"
-                "application/xml;q=0.9,*/*;q=0.8"
-            ),
-            "Accept-Language": "fr-FR,fr;q=0.9",
-        },
-        timeout=30,
-    )
-
-    print("Tesla HTTP :", response.status_code)
-
-    if response.status_code != 200:
-
-        print("⚠️ Tesla refuse la requête directe.")
-
-        message = (
-            "🤖 TESLA HUNTER 🇫🇷\n\n"
-            "⚠️ Chrome Tesla fonctionne.\n"
-            "❌ La requête directe Tesla est refusée.\n\n"
-            f"HTTP Tesla : {response.status_code}"
-        )
-
-    else:
-
-        print("✅ Tesla accessible.")
-
-        message = (
-            "🤖 TESLA HUNTER ACTIF 🇫🇷\n\n"
-            "✅ Chrome Tesla fonctionne\n"
-            "✅ Connexion Tesla réussie\n"
-            "✅ Surveillance Model 3 / Model Y / Model S / Model X\n"
-            "🔎 Recherche des véhicules neufs en France\n\n"
-            "Le robot fonctionne correctement."
-        )
-
-    # --------------------------------------------------
-    # ENVOI TELEGRAM
-    # --------------------------------------------------
-
-    print("📨 Envoi du message Telegram...")
-
-    telegram_url = (
-        f"https://api.telegram.org/"
-        f"bot{BOT_TOKEN}/sendMessage"
-    )
-
-    telegram = requests.post(
-        telegram_url,
         json={
             "chat_id": CHAT_ID,
             "text": message,
+            "disable_web_page_preview": False,
         },
         timeout=20,
     )
 
-    print("Telegram HTTP :", telegram.status_code)
+    print("Telegram HTTP:", r.status_code)
 
-    if telegram.status_code != 200:
-
-        print("❌ Erreur Telegram :")
-        print(telegram.text)
-
-        raise Exception("Erreur Telegram")
-
-    print("✅ Message Telegram envoyé !")
+    if r.status_code != 200:
+        print(r.text)
+        raise RuntimeError("Erreur Telegram")
 
 
-asyncio.run(main())
+async def get_tesla_cookies():
+    print("🌐 Ouverture de Tesla avec Chrome...")
+
+    browser = await uc.start(
+        headless=True,
+        no_sandbox=True,
+        browser_args=[
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--window-size=1920,1080",
+        ],
+    )
+
+    try:
+        page = await browser.get(
+            "https://www.tesla.com/fr_fr/inventory/new"
+        )
+
+        print("⏳ Attente du chargement Tesla/Akamai...")
+
+        await asyncio.sleep(12)
+
+        cookies = await page.send(
+            uc.cdp.network.get_cookies()
+        )
+
+        result = {}
+
+        for cookie in cookies:
+            try:
+                result[cookie.name] = cookie.value
+            except Exception:
+                pass
+
+        print(f"🍪 Cookies récupérés : {len(result)}")
+
+        return result
+
+    finally:
+        await browser.stop()
+
+
+def search_inventory(model_code, cookies):
+
+    query = {
+        "query": {
+            "model": model_code,
+            "condition": "new",
+            "options": {},
+            "arrangeby": "Price",
+            "order": "asc",
+            "market": "FR",
+            "language": "fr",
+            "super_region": "europe",
+            "lng": 2.3522,
+            "lat": 48.8566,
+            "zip": "75001",
+            "range": 0,
+        },
+        "offset": 0,
+        "count": 100,
+        "outsideOffset": 0,
+        "outsideSearch": False,
+        "isFalconDeliverySelectionEnabled": True,
+        "version": "v2",
+    }
+
+    encoded = quote(
+        json.dumps(
+            query,
+            separators=(",", ":")
+        )
+    )
+
+    url = f"{API_URL}?query={encoded}"
+
+    headers = {
+        "accept": "*/*",
+        "accept-language": "fr-FR,fr;q=0.9,en;q=0.8",
+        "referer": "https://www.tesla.com/fr_fr/inventory/new",
+        "user-agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) "
+            "AppleWebKit/537.36 "
+            "(KHTML, like Gecko) "
+            "Chrome/139.0.0.0 Safari/537.36"
+        ),
+    }
+
+    print(f"🔎 Recherche {MODELS[model_code]}...")
+
+    r = requests.get(
+        url,
+        headers=headers,
+        cookies=cookies,
+        impersonate="chrome",
+        timeout=30,
+    )
+
+    print(f"   HTTP {r.status_code}")
+
+    if r.status_code != 200:
+        print(r.text[:1000])
+        return None
+
+    try:
+        data = r.json()
+    except Exception:
+        print("❌ Réponse non JSON")
+        print(r.text[:1000])
+        return None
+
+    results = data.get("results", [])
+
+    if not isinstance(results, list):
+        results = []
+
+    print(f"   ✅ {len(results)} véhicule(s)")
+
+    return results
+
+
+print()
+print("🤖 TESLA HUNTER FRANCE")
+print("=" * 50)
+
+cookies = asyncio.run(get_tesla_cookies())
+
+if not cookies:
+    send_telegram(
+        "⚠️ TESLA HUNTER 🇫🇷\n\n"
+        "❌ Impossible de récupérer les cookies Tesla/Akamai.\n"
+        "La recherche est annulée."
+    )
+
+    raise SystemExit(1)
+
+
+found = []
+blocked = False
+
+
+for model_code in MODELS:
+
+    results = search_inventory(
+        model_code,
+        cookies
+    )
+
+    if results is None:
+        blocked = True
+        continue
+
+    for car in results:
+
+        condition = str(
+            car.get("Condition", "")
+        ).lower()
+
+        if condition not in ("", "new"):
+            continue
+
+        found.append({
+            "model": MODELS[model_code],
+
+            "vin": car.get(
+                "VIN",
+                ""
+            ),
+
+            "price": car.get(
+                "InventoryPrice"
+            ),
+
+            "trim": car.get(
+                "TrimName",
+                "Version inconnue"
+            ),
+
+            "year": car.get(
+                "Year",
+                ""
+            ),
+
+            "paint": car.get(
+                "Paint",
+                car.get("PAINT", "")
+            ),
+
+            "interior": car.get(
+                "Interior",
+                ""
+            ),
+
+            "location": car.get(
+                "DeliveryLocation",
+                car.get("City", "")
+            ),
+
+            "url": car.get(
+                "InventoryLink",
+                ""
+            ),
+        })
+
+
+print()
+print("=" * 50)
+print(f"🚗 TOTAL : {len(found)} Tesla neuve(s)")
+print("=" * 50)
+
+
+if blocked and not found:
+
+    send_telegram(
+        "⚠️ TESLA HUNTER 🇫🇷\n\n"
+        "🚫 Tesla/Akamai a bloqué la recherche.\n\n"
+        "Aucune alerte de disponibilité "
+        "n'est envoyée."
+    )
+
+    raise SystemExit(0)
+
+
+if not found:
+
+    print("ℹ️ Aucune Tesla neuve détectée.")
+
+    raise SystemExit(0)
+
+
+message = (
+    "🚨 TESLA DISPONIBLE ! 🇫🇷\n\n"
+    f"🚗 {len(found)} Tesla neuve(s) détectée(s)\n\n"
+)
+
+
+for car in found[:15]:
+
+    price = car["price"]
+
+    if isinstance(price, (int, float)):
+
+        price_text = (
+            f"{price:,.0f} €"
+            .replace(",", " ")
+        )
+
+    else:
+
+        price_text = "Prix indisponible"
+
+
+    message += (
+        f"⚡ {car['model']}\n"
+        f"💰 {price_text}\n"
+        f"🏷️ {car['trim']}\n"
+    )
+
+
+    if car["year"]:
+        message += f"📅 {car['year']}\n"
+
+
+    if car["paint"]:
+        message += f"🎨 {car['paint']}\n"
+
+
+    if car["interior"]:
+        message += f"🛋️ {car['interior']}\n"
+
+
+    if car["location"]:
+        message += f"📍 {car['location']}\n"
+
+
+    if car["vin"]:
+        message += f"🔑 VIN : {car['vin']}\n"
+
+
+    if car["url"]:
+        message += f"🔗 {car['url']}\n"
+
+
+    message += "\n"
+
+
+send_telegram(message)
+
+print("✅ Alerte Telegram envoyée !")
