@@ -1,49 +1,57 @@
 import asyncio
-import json
 import os
-
-import nodriver as uc
 import requests
+import nodriver as uc
 
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
-
-DATABASE = "seen_teslas.json"
 
 
 async def main():
 
     print("🚗 Ouverture de Tesla...")
 
+    # Démarrage de Chrome compatible GitHub Actions
     browser = await uc.start(
         headless=True,
         no_sandbox=True,
-        browser_executable_path="/usr/bin/google-chrome"
+        browser_executable_path="/usr/bin/google-chrome",
+        browser_args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--disable-software-rasterizer",
+        ],
     )
 
-    page = await browser.get(
-        "https://www.tesla.com/fr_fr/inventory/new/my"
-    )
+    try:
 
-    print("⏳ Attente du chargement de Tesla...")
-    await asyncio.sleep(12)
+        print("🌐 Ouverture de la page Tesla...")
 
-    print("🔎 Recherche des véhicules...")
+        page = await browser.get(
+            "https://www.tesla.com/fr_fr/inventory/new/my"
+        )
 
-    # Récupération du contenu de la page Tesla
-    html = await page.get_content()
+        print("⏳ Attente du chargement de Tesla...")
+        await asyncio.sleep(12)
 
-    print(f"Page Tesla reçue : {len(html)} caractères")
+        print("🔎 Lecture de la page Tesla...")
 
-    # Fermeture de Chrome
-    browser.stop()
+        html = await page.get_content()
 
-    # ---------------------------------------------------------
-    # Vérification de l'accès direct à Tesla
-    # ---------------------------------------------------------
+        print(f"✅ Page Tesla reçue : {len(html)} caractères")
 
-    print("📡 Tentative d'interrogation de l'inventaire...")
+    finally:
+
+        print("🛑 Fermeture de Chrome...")
+        browser.stop()
+
+    # --------------------------------------------------
+    # TEST DE L'ACCÈS DIRECT À TESLA
+    # --------------------------------------------------
+
+    print("📡 Test de connexion Tesla...")
 
     url = "https://www.tesla.com/fr_fr/inventory/new/my"
 
@@ -60,31 +68,42 @@ async def main():
                 "text/html,application/xhtml+xml,"
                 "application/xml;q=0.9,*/*;q=0.8"
             ),
-            "Accept-Language": "fr-FR,fr;q=0.9"
+            "Accept-Language": "fr-FR,fr;q=0.9",
         },
-        timeout=30
+        timeout=30,
     )
 
-    print("Tesla HTTP:", response.status_code)
+    print("Tesla HTTP :", response.status_code)
 
     if response.status_code != 200:
-        print("⚠️ Tesla refuse encore la requête directe.")
-        print("Mais Chrome Tesla fonctionne correctement.")
-        return
 
-    print("✅ Tesla accessible.")
+        print("⚠️ Tesla refuse la requête directe.")
 
-    # ---------------------------------------------------------
-    # Test Telegram
-    # ---------------------------------------------------------
+        message = (
+            "🤖 TESLA HUNTER 🇫🇷\n\n"
+            "⚠️ Chrome Tesla fonctionne.\n"
+            "❌ La requête directe Tesla est refusée.\n\n"
+            f"HTTP Tesla : {response.status_code}"
+        )
 
-    message = (
-        "🤖 TESLA HUNTER ACTIF 🇫🇷\n\n"
-        "✅ Connexion Tesla réussie\n"
-        "✅ Surveillance Model 3 / Y / S / X\n"
-        "🔎 Recherche des véhicules neufs en France\n\n"
-        "Le système fonctionne."
-    )
+    else:
+
+        print("✅ Tesla accessible.")
+
+        message = (
+            "🤖 TESLA HUNTER ACTIF 🇫🇷\n\n"
+            "✅ Chrome Tesla fonctionne\n"
+            "✅ Connexion Tesla réussie\n"
+            "✅ Surveillance Model 3 / Model Y / Model S / Model X\n"
+            "🔎 Recherche des véhicules neufs en France\n\n"
+            "Le robot fonctionne correctement."
+        )
+
+    # --------------------------------------------------
+    # ENVOI TELEGRAM
+    # --------------------------------------------------
+
+    print("📨 Envoi du message Telegram...")
 
     telegram_url = (
         f"https://api.telegram.org/"
@@ -95,18 +114,21 @@ async def main():
         telegram_url,
         json={
             "chat_id": CHAT_ID,
-            "text": message
+            "text": message,
         },
-        timeout=20
+        timeout=20,
     )
 
-    print("Telegram HTTP:", telegram.status_code)
+    print("Telegram HTTP :", telegram.status_code)
 
     if telegram.status_code != 200:
+
+        print("❌ Erreur Telegram :")
         print(telegram.text)
+
         raise Exception("Erreur Telegram")
 
-    print("📨 Message Telegram envoyé !")
+    print("✅ Message Telegram envoyé !")
 
 
 asyncio.run(main())
