@@ -1,41 +1,45 @@
-name: Tesla Stock Alert
+name: Tesla France Alert
 
 on:
   schedule:
     - cron: "*/10 * * * *"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   check-tesla:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
+
       - name: Vérifier les Tesla disponibles
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python - <<'PY'
+          import json
           import os
           import requests
 
           BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
           CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-          MODELS = ["Model 3", "Model Y", "Model S", "Model X"]
-
-          # URL Tesla France
-          url = "https://www.tesla.com/inventory/api/v4/inventory-results"
+          URL = "https://www.tesla.com/inventory/api/v4/inventory-results"
 
           params = {
-              "query": '{"query":{"model":["m3","my","ms","mx"],"condition":"new"},"options":{"sort":"Price","used":false},"offset":0,"count":100}',
               "market": "FR",
               "language": "fr",
               "model": "m3,my,ms,mx",
               "condition": "new",
-              "arrangeby": "plh",
+              "arrangeby": "Price",
               "order": "asc",
-              "market": "FR"
+              "offset": 0,
+              "count": 100
           }
 
           headers = {
@@ -45,90 +49,157 @@ jobs:
 
           try:
               response = requests.get(
-                  url,
+                  URL,
                   params=params,
                   headers=headers,
                   timeout=30
               )
 
-              print("HTTP:", response.status_code)
+              print("Tesla HTTP:", response.status_code)
 
               if response.status_code != 200:
                   raise Exception(
-                      f"Tesla API HTTP {response.status_code}: {response.text[:500]}"
+                      f"Réponse Tesla inattendue: {response.status_code}"
                   )
 
               data = response.json()
 
           except Exception as e:
-              print("Erreur Tesla:", e)
+              print("Erreur:", e)
               raise
 
-          results = data.get("results", [])
+          vehicles = data.get("results", [])
 
-          print(f"Véhicules trouvés : {len(results)}")
+          print(f"Tesla trouvées : {len(vehicles)}")
 
-          if not results:
-              print("Aucune Tesla neuve trouvée.")
-              exit(0)
+          # Fichier qui mémorise les Tesla déjà signalées
+          database = "seen_teslas.json"
 
-          messages = []
+          try:
+              with open(database, "r") as f:
+                  seen = set(json.load(f))
+          except:
+              seen = set()
 
-          for car in results:
-              model = car.get("Model", car.get("model", "Tesla"))
+          new_vehicles = []
 
-              if model not in MODELS:
+          for car in vehicles:
+
+              vin = (
+                  car.get("VIN")
+                  or car.get("vin")
+                  or car.get("VINNumber")
+              )
+
+              if not vin:
                   continue
 
-              vin = car.get("VIN", car.get("vin", ""))
-              price = car.get("Price", car.get("price", ""))
-              trim = car.get("TrimName", car.get("trimName", ""))
-              color = car.get("Color", car.get("color", ""))
-              city = car.get("City", car.get("city", ""))
+              if vin in seen:
+                  continue
 
-              vehicle_url = car.get("VehicleURL", car.get("vehicleUrl", ""))
+              model = (
+                  car.get("Model")
+                  or car.get("model")
+                  or "Tesla"
+              )
+
+              price = (
+                  car.get("Price")
+                  or car.get("price")
+                  or "?"
+              )
+
+              trim = (
+                  car.get("TrimName")
+                  or car.get("trimName")
+                  or ""
+              )
+
+              color = (
+                  car.get("Color")
+                  or car.get("color")
+                  or ""
+              )
+
+              city = (
+                  car.get("City")
+                  or car.get("city")
+                  or ""
+              )
+
+              vehicle_url = (
+                  car.get("VehicleURL")
+                  or car.get("vehicleUrl")
+                  or ""
+              )
+
+              new_vehicles.append({
+                  "vin": vin,
+                  "model": model,
+                  "price": price,
+                  "trim": trim,
+                  "color": color,
+                  "city": city,
+                  "url": vehicle_url
+              })
+
+          # On mémorise toutes les Tesla détectées
+          for car in vehicles:
+              vin = (
+                  car.get("VIN")
+                  or car.get("vin")
+                  or car.get("VINNumber")
+              )
+
+              if vin:
+                  seen.add(vin)
+
+          with open(database, "w") as f:
+              json.dump(sorted(seen), f, indent=2)
+
+          # Envoi Telegram uniquement pour les nouvelles Tesla
+          for car in new_vehicles[:10]:
 
               message = (
-                  f"🚨 TESLA DISPONIBLE\n\n"
-                  f"🚗 {model}\n"
-                  f"⚙️ {trim}\n"
-                  f"💰 {price} €\n"
-                  f"🎨 {color}\n"
-                  f"📍 {city}\n"
-                  f"🆔 {vin}\n"
+                  "🚨 NOUVELLE TESLA DISPONIBLE 🇫🇷\n\n"
+                  f"🚗 {car['model']}\n"
+                  f"⚙️ {car['trim']}\n"
+                  f"💰 {car['price']} €\n"
+                  f"🎨 {car['color']}\n"
+                  f"📍 {car['city']}\n"
+                  f"🆔 {car['vin']}"
               )
 
-              if vehicle_url:
-                  message += f"\n🔗 {vehicle_url}"
+              if car["url"]:
+                  message += f"\n\n🔗 {car['url']}"
 
-              messages.append(message)
-
-          if not messages:
-              print("Aucun véhicule correspondant.")
-              exit(0)
-
-          # Limite Telegram : on évite d'envoyer des centaines de messages
-          messages = messages[:10]
-
-          for message in messages:
-              telegram_url = (
-                  f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+              telegram = (
+                  f"https://api.telegram.org/"
+                  f"bot{BOT_TOKEN}/sendMessage"
               )
-
-              payload = {
-                  "chat_id": CHAT_ID,
-                  "text": message
-              }
 
               r = requests.post(
-                  telegram_url,
-                  json=payload,
+                  telegram,
+                  json={
+                      "chat_id": CHAT_ID,
+                      "text": message
+                  },
                   timeout=20
               )
 
               print("Telegram:", r.status_code)
 
-              if r.status_code != 200:
-                  print(r.text)
+          print(f"Nouvelles Tesla signalées : {len(new_vehicles)}")
 
           PY
+
+      - name: Sauvegarder les Tesla déjà vues
+        run: |
+          git config user.name "Tesla Alert Bot"
+          git config user.email "tesla-alert@users.noreply.github.com"
+
+          git add seen_teslas.json
+
+          git diff --cached --quiet || git commit -m "Update Tesla inventory"
+
+          git push
