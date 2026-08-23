@@ -50,7 +50,7 @@ jobs:
     no_sandbox=True,
     browser_executable_path="/usr/bin/google-chrome"
 )
-              )
+            
 
               page = await browser.get(
                   "https://www.tesla.com/fr_fr/inventory/new/my"
