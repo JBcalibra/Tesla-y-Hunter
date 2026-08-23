@@ -3,47 +3,33 @@ name: Tesla Hunter France
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/10 * * * *"
+    - cron: "*/15 * * * *"
 
 jobs:
   tesla-hunter:
     runs-on: ubuntu-latest
 
-    env:
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
     steps:
-      - name: Télécharger le dépôt
-        uses: actions/checkout@v4
-
       - name: Installer Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Installer Chrome
-        uses: browser-actions/setup-chrome@v2
-        with:
-          chrome-version: stable
-
       - name: Installer les dépendances
         run: |
           python -m pip install --upgrade pip
-          pip install curl_cffi nodriver
+          pip install curl_cffi
 
-      - name: Lancer Tesla Hunter
+      - name: Rechercher les Tesla neuves
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python - <<'PY'
-          import asyncio
           import json
           import os
-          import sys
           from urllib.parse import quote
-
           from curl_cffi import requests
-          import nodriver as uc
-
 
           BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
           CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
@@ -58,48 +44,28 @@ jobs:
           }
 
 
-          async def get_tesla_cookies():
+          def send_telegram(message):
+              url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
-              print("🌐 Ouverture de Tesla avec Chrome...")
-
-              browser = await uc.start(
-                  headless=True,
-                  no_sandbox=True,
-                  browser_executable_path="/usr/bin/google-chrome"
+              r = requests.post(
+                  url,
+                  json={
+                      "chat_id": CHAT_ID,
+                      "text": message,
+                      "disable_web_page_preview": False,
+                  },
+                  impersonate="chrome",
+                  timeout=20,
               )
 
-              try:
-                  page = await browser.get(
-                      "https://www.tesla.com/fr_fr/inventory/new"
-                  )
+              print("📨 Telegram HTTP:", r.status_code)
 
-                  print("⏳ Attente de Tesla...")
-                  await asyncio.sleep(10)
-
-                  cookies = await page.send(
-                      uc.cdp.network.get_cookies()
-                  )
-
-                  cookie_dict = {}
-
-                  for cookie in cookies.cookies:
-                      cookie_dict[cookie.name] = cookie.value
-
-                  print(
-                      f"🍪 Cookies récupérés : "
-                      f"{len(cookie_dict)}"
-                  )
-
-                  return cookie_dict
-
-              finally:
-                  try:
-                      await browser.stop()
-                  except Exception:
-                      pass
+              if r.status_code != 200:
+                  print(r.text)
+                  raise Exception("Erreur Telegram")
 
 
-          def search_inventory(model_code, cookies):
+          def search_inventory(model_code):
 
               query = {
                   "query": {
@@ -133,25 +99,21 @@ jobs:
 
               url = f"{API_URL}?query={encoded_query}"
 
-              print(
-                  f"🔎 Recherche {MODELS[model_code]}..."
-              )
+              print(f"🔎 Recherche {MODELS[model_code]}...")
 
               r = requests.get(
                   url,
                   impersonate="chrome",
-                  cookies=cookies,
                   headers={
                       "accept": "*/*",
-                      "accept-language":
-                          "fr-FR,fr;q=0.9,en;q=0.8",
-                      "referer":
-                          "https://www.tesla.com/fr_fr/inventory/new",
-                      "user-agent":
+                      "accept-language": "fr-FR,fr;q=0.9,en;q=0.8",
+                      "referer": "https://www.tesla.com/fr_fr/inventory/new",
+                      "user-agent": (
                           "Mozilla/5.0 (X11; Linux x86_64) "
                           "AppleWebKit/537.36 "
                           "(KHTML, like Gecko) "
                           "Chrome/139.0.0.0 Safari/537.36"
+                      )
                   },
                   timeout=30
               )
@@ -175,169 +137,125 @@ jobs:
               if not isinstance(results, list):
                   results = []
 
-              print(
-                  f"   ✅ {len(results)} véhicule(s)"
-              )
+              print(f"   ✅ {len(results)} véhicule(s)")
 
               return results
 
 
-          def send_telegram(message):
+          print("")
+          print("🤖 TESLA HUNTER FRANCE")
+          print("=" * 50)
 
-              url = (
-                  "https://api.telegram.org/"
-                  f"bot{BOT_TOKEN}/sendMessage"
-              )
+          found = []
+          blocked = False
 
-              r = requests.post(
-                  url,
-                  json={
-                      "chat_id": CHAT_ID,
-                      "text": message,
-                      "disable_web_page_preview": False,
-                  },
-                  impersonate="chrome",
-                  timeout=20
-              )
+          for model_code in MODELS:
 
-              print(
-                  "📨 Telegram HTTP:",
-                  r.status_code
-              )
+              results = search_inventory(model_code)
 
-              if r.status_code != 200:
-                  print(r.text)
-                  raise Exception(
-                      "Erreur Telegram"
-                  )
+              if results is None:
+                  blocked = True
+                  continue
 
+              for car in results:
 
-          async def main():
+                  condition = str(
+                      car.get("Condition", "")
+                  ).lower()
 
-              print("")
-              print("🤖 TESLA HUNTER FRANCE")
-              print("=" * 50)
-
-              cookies = await get_tesla_cookies()
-
-              if not cookies:
-
-                  print(
-                      "❌ Impossible de récupérer "
-                      "les cookies Tesla"
-                  )
-
-                  send_telegram(
-                      "⚠️ TESLA HUNTER 🇫🇷\n\n"
-                      "❌ Impossible d'obtenir les "
-                      "cookies Tesla.\n\n"
-                      "La recherche n'est PAS "
-                      "considérée comme vide."
-                  )
-
-                  return
-
-              found = []
-              blocked = False
-
-              for model_code in MODELS:
-
-                  results = search_inventory(
-                      model_code,
-                      cookies
-                  )
-
-                  if results is None:
-                      blocked = True
+                  if condition not in ("", "new"):
                       continue
 
-                  for car in results:
+                  found.append({
+                      "model": MODELS[model_code],
 
-                      condition = str(
-                          car.get("Condition", "")
-                      ).lower()
+                      "vin": car.get(
+                          "VIN",
+                          ""
+                      ),
 
-                      if condition not in ("", "new"):
-                          continue
+                      "price": car.get(
+                          "InventoryPrice"
+                      ),
 
-                      found.append({
-                          "model":
-                              MODELS[model_code],
+                      "trim": car.get(
+                          "TrimName",
+                          "Version inconnue"
+                      ),
 
-                          "vin":
-                              car.get("VIN", ""),
+                      "year": car.get(
+                          "Year",
+                          ""
+                      ),
 
-                          "price":
-                              car.get("InventoryPrice"),
+                      "paint": car.get(
+                          "Paint",
+                          car.get("PAINT", "")
+                      ),
 
-                          "trim":
-                              car.get(
-                                  "TrimName",
-                                  "Version inconnue"
-                              ),
+                      "interior": car.get(
+                          "Interior",
+                          ""
+                      ),
 
-                          "year":
-                              car.get("Year", ""),
+                      "location": car.get(
+                          "DeliveryLocation",
+                          car.get("City", "")
+                      ),
 
-                          "paint":
-                              car.get(
-                                  "Paint",
-                                  car.get("PAINT", "")
-                              ),
+                      "url": car.get(
+                          "InventoryLink",
+                          ""
+                      )
+                  })
 
-                          "interior":
-                              car.get(
-                                  "Interior",
-                                  ""
-                              ),
 
-                          "location":
-                              car.get(
-                                  "DeliveryLocation",
-                                  car.get("City", "")
-                              ),
-                      })
+          print("")
+          print("=" * 50)
+          print(f"🚗 TOTAL : {len(found)} Tesla neuve(s)")
+          print("=" * 50)
 
-              print("")
-              print("=" * 50)
-              print(
-                  f"🚗 TOTAL : "
-                  f"{len(found)} Tesla neuve(s)"
+
+          # ----------------------------------------
+          # TESLA A BLOQUÉ UNE REQUÊTE
+          # ----------------------------------------
+
+          if blocked:
+
+              send_telegram(
+                  "⚠️ TESLA HUNTER 🇫🇷\n\n"
+                  "🚫 Tesla a bloqué au moins "
+                  "une requête d'inventaire.\n\n"
+                  "La recherche est considérée "
+                  "comme INCOMPLÈTE.\n\n"
+                  "👉 Aucune alerte de disponibilité "
+                  "n'est envoyée."
               )
-              print("=" * 50)
 
-              if blocked:
+          # ----------------------------------------
+          # AUCUNE TESLA
+          # ----------------------------------------
 
-                  send_telegram(
-                      "⚠️ TESLA HUNTER 🇫🇷\n\n"
-                      "🚫 Tesla a bloqué au moins "
-                      "une requête d'inventaire.\n\n"
-                      "La recherche est considérée "
-                      "comme INCOMPLÈTE.\n\n"
-                      "👉 Aucune alerte de disponibilité "
-                      "n'est envoyée."
-                  )
+          elif not found:
 
-                  return
+              print("ℹ️ Aucune Tesla neuve détectée.")
 
-              if not found:
+              send_telegram(
+                  "🔎 TESLA HUNTER 🇫🇷\n\n"
+                  "Aucune Tesla neuve disponible "
+                  "détectée actuellement.\n\n"
+                  "Modèles surveillés :\n"
+                  "• Model 3\n"
+                  "• Model Y\n"
+                  "• Model S\n"
+                  "• Model X"
+              )
 
-                  print(
-                      "ℹ️ Aucune Tesla neuve détectée."
-                  )
+          # ----------------------------------------
+          # TESLA TROUVÉE
+          # ----------------------------------------
 
-                  send_telegram(
-                      "🔎 TESLA HUNTER 🇫🇷\n\n"
-                      "Aucune Tesla neuve disponible "
-                      "détectée actuellement.\n\n"
-                      "Modèles surveillés :\n"
-                      "• Model 3\n"
-                      "• Model Y\n"
-                      "• Model S\n"
-                      "• Model X"
-                  )
-
-                  return
+          else:
 
               message = (
                   "🚨 TESLA DISPONIBLE ! 🇫🇷\n\n"
@@ -353,16 +271,13 @@ jobs:
                       price,
                       (int, float)
                   ):
-
                       price_text = (
                           f"{price:,.0f} €"
                           .replace(",", " ")
                       )
-
                   else:
-                      price_text = (
-                          "Prix indisponible"
-                      )
+                      price_text = "Prix indisponible"
+
 
                   message += (
                       f"⚡ {car['model']}\n"
@@ -370,59 +285,47 @@ jobs:
                       f"🏷️ {car['trim']}\n"
                   )
 
+
                   if car["year"]:
                       message += (
                           f"📅 {car['year']}\n"
                       )
+
 
                   if car["paint"]:
                       message += (
                           f"🎨 {car['paint']}\n"
                       )
 
+
                   if car["interior"]:
                       message += (
                           f"🛋️ {car['interior']}\n"
                       )
+
 
                   if car["location"]:
                       message += (
                           f"📍 {car['location']}\n"
                       )
 
+
                   if car["vin"]:
                       message += (
                           f"🔑 VIN : {car['vin']}\n"
                       )
 
+
+                  if car["url"]:
+                      message += (
+                          f"🔗 {car['url']}\n"
+                      )
+
                   message += "\n"
+
 
               send_telegram(message)
 
-              print(
-                  "✅ Alerte Telegram envoyée !"
-              )
-
-
-          try:
-              asyncio.run(main())
-
-          except Exception as e:
-
-              print("")
-              print("❌ ERREUR FATALE")
-              print(str(e))
-
-              try:
-                  send_telegram(
-                      "🚨 TESLA HUNTER 🇫🇷\n\n"
-                      "❌ Le script a rencontré "
-                      "une erreur.\n\n"
-                      f"Erreur : {str(e)[:500]}"
-                  )
-              except Exception:
-                  pass
-
-              sys.exit(1)
+              print("✅ Alerte Telegram envoyée !")
 
           PY
