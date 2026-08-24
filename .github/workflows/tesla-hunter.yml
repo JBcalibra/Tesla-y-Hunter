@@ -26,30 +26,30 @@ jobs:
       - name: Installer les dépendances
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4
+          pip install requests
 
       - name: Rechercher les Tesla neuves
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
         run: |
           python - <<'PY'
+
           import os
-          import re
           import json
           import hashlib
           import subprocess
-          from urllib.parse import urljoin
-
           import requests
-          from bs4 import BeautifulSoup
 
 
           # ============================================================
           # CONFIGURATION
           # ============================================================
 
-          SOURCE_URL = "https://tesla-info.com/inventory/France/All/New/"
+          INVENTORY_URL = "https://www.tesla.com/inventory/api/v4/inventory-results"
+
+          COUNTRY = "FR"
 
           MODELS = {
               "Model 3",
@@ -69,6 +69,7 @@ jobs:
           # ============================================================
 
           def send_telegram(text):
+
               url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
               response = requests.post(
@@ -89,25 +90,39 @@ jobs:
 
 
           # ============================================================
-          # ETAT DES VEHICULES DEJA VUS
+          # ETAT
           # ============================================================
 
           def load_seen():
+
               if not os.path.exists(STATE_FILE):
                   return set()
 
               try:
-                  with open(STATE_FILE, "r", encoding="utf-8") as f:
-                      data = json.load(f)
 
-                  return set(data)
+                  with open(
+                      STATE_FILE,
+                      "r",
+                      encoding="utf-8"
+                  ) as f:
 
-              except Exception:
+                      return set(json.load(f))
+
+              except Exception as e:
+
+                  print("⚠️ Impossible de lire l'état :", e)
+
                   return set()
 
 
           def save_seen(seen):
-              with open(STATE_FILE, "w", encoding="utf-8") as f:
+
+              with open(
+                  STATE_FILE,
+                  "w",
+                  encoding="utf-8"
+              ) as f:
+
                   json.dump(
                       sorted(seen),
                       f,
@@ -117,167 +132,379 @@ jobs:
 
 
           # ============================================================
-          # RECUPERATION TESLA-INFO
+          # NORMALISATION MODELE
           # ============================================================
 
-          headers = {
-              "User-Agent": (
-                  "Mozilla/5.0 (X11; Linux x86_64) "
-                  "AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) "
-                  "Chrome/139.0.0.0 Safari/537.36"
-              ),
-              "Accept": (
-                  "text/html,application/xhtml+xml,"
-                  "application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
-              ),
-              "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
-              "Referer": "https://tesla-info.com/",
-          }
+          def normalize_model(vehicle):
 
+              text = " ".join(
+                  str(vehicle.get(key, ""))
+                  for key in [
+                      "Model",
+                      "model",
+                      "modelName",
+                      "model_name",
+                      "trim",
+                      "Trim",
+                  ]
+              ).lower()
+
+
+              if "model 3" in text:
+                  return "Model 3"
+
+              if "model y" in text:
+                  return "Model Y"
+
+              if "model s" in text:
+                  return "Model S"
+
+              if "model x" in text:
+                  return "Model X"
+
+              return None
+
+
+          # ============================================================
+          # EXTRACTION PRIX
+          # ============================================================
+
+          def extract_price(vehicle):
+
+              possible_keys = [
+                  "Price",
+                  "price",
+                  "totalPrice",
+                  "total_price",
+                  "cashPrice",
+                  "cash_price",
+              ]
+
+              for key in possible_keys:
+
+                  value = vehicle.get(key)
+
+                  if value is not None:
+
+                      try:
+
+                          number = float(value)
+
+                          return (
+                              f"{number:,.0f}"
+                              .replace(",", " ")
+                              + " €"
+                          )
+
+                      except Exception:
+                          pass
+
+              return ""
+
+
+          # ============================================================
+          # IDENTIFIANT
+          # ============================================================
+          #
+          # PAS DE VIN.
+          #
+          # On construit une signature à partir des caractéristiques
+          # disponibles de la voiture.
+          #
+          # L'objectif est simplement :
+          #
+          #   même configuration = même véhicule logique
+          #
+          # et non d'identifier juridiquement la voiture.
+          # ============================================================
+
+          def vehicle_id(vehicle, model):
+
+              interesting_keys = [
+                  "Model",
+                  "model",
+                  "modelName",
+                  "Trim",
+                  "trim",
+                  "Price",
+                  "price",
+                  "ExteriorColor",
+                  "exteriorColor",
+                  "interiorColor",
+                  "InteriorColor",
+                  "wheel",
+                  "Wheels",
+                  "wheelConfig",
+                  "battery",
+                  "Battery",
+                  "drive",
+                  "Drive",
+                  "configuration",
+              ]
+
+              data = {}
+
+              for key in interesting_keys:
+
+                  if key in vehicle:
+                      data[key] = vehicle[key]
+
+              data["model_normalized"] = model
+
+              raw = json.dumps(
+                  data,
+                  sort_keys=True,
+                  ensure_ascii=False,
+                  default=str,
+              )
+
+              return hashlib.sha256(
+                  raw.encode("utf-8")
+              ).hexdigest()
+
+
+          # ============================================================
+          # RECHERCHE INVENTAIRE
+          # ============================================================
 
           print("=" * 60)
           print("TESLA HUNTER FRANCE")
           print("=" * 60)
+
           print()
-          print("Source :", SOURCE_URL)
-          print("Modèles :", ", ".join(sorted(MODELS)))
+          print("Source :", INVENTORY_URL)
+          print("Pays   :", COUNTRY)
+          print("Modèles:", ", ".join(sorted(MODELS)))
           print()
+
+
+          headers = {
+              "User-Agent": (
+                  "Mozilla/5.0 "
+                  "(X11; Linux x86_64) "
+                  "AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) "
+                  "Chrome/139.0.0.0 Safari/537.36"
+              ),
+              "Accept": "application/json",
+              "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+          }
+
+
+          # ============================================================
+          # PARAMETRES INVENTAIRE
+          # ============================================================
+          #
+          # On demande uniquement des véhicules disponibles en France.
+          #
+          # L'API Tesla peut faire évoluer ses paramètres.
+          # Si Tesla modifie son schéma, le workflow affichera le JSON
+          # reçu afin de faciliter la maintenance.
+          # ============================================================
+
+          params = {
+              "country": COUNTRY,
+              "condition": "new",
+              "model": "m3,my,ms,mx",
+          }
 
 
           try:
+
               response = requests.get(
-                  SOURCE_URL,
+                  INVENTORY_URL,
+                  params=params,
                   headers=headers,
                   timeout=30,
               )
 
           except Exception as e:
-              print("❌ Impossible de contacter Tesla-info")
+
+              print("❌ Impossible de contacter Tesla.")
               print(e)
+
               raise SystemExit(1)
 
 
-          print("Tesla-info HTTP :", response.status_code)
+          print("HTTP Tesla :", response.status_code)
+          print("URL finale :", response.url)
+
+
+          # ============================================================
+          # 403
+          # ============================================================
+
+          if response.status_code == 403:
+
+              print()
+              print("❌ TESLA A REFUSÉ LA REQUÊTE (HTTP 403)")
+              print()
+              print(
+                  "Ce n'est PAS interprété comme "
+                  "'aucune voiture disponible'."
+              )
+              print(
+                  "L'état précédent est donc conservé."
+              )
+
+              raise SystemExit(1)
+
 
           if response.status_code != 200:
-              print(response.text[:1000])
+
+              print()
+              print(
+                  "❌ Réponse Tesla inattendue :",
+                  response.status_code,
+              )
+
+              print(response.text[:2000])
+
               raise SystemExit(1)
 
 
-          html = response.text
+          # ============================================================
+          # JSON
+          # ============================================================
 
-          print("Taille HTML :", len(html), "octets")
+          try:
+
+              data = response.json()
+
+          except Exception as e:
+
+              print("❌ Réponse Tesla non JSON.")
+              print(e)
+              print(response.text[:2000])
+
+              raise SystemExit(1)
+
+
+          print()
+          print("JSON Tesla reçu.")
+          print()
 
 
           # ============================================================
-          # PARSING
+          # EXTRACTION DES VEHICULES
           # ============================================================
 
-          soup = BeautifulSoup(html, "html.parser")
+          vehicles_raw = []
+
+
+          if isinstance(data, list):
+
+              vehicles_raw = data
+
+
+          elif isinstance(data, dict):
+
+              # Plusieurs structures possibles.
+
+              for key in [
+                  "results",
+                  "vehicles",
+                  "inventory",
+                  "data",
+                  "resultsData",
+              ]:
+
+                  value = data.get(key)
+
+                  if isinstance(value, list):
+
+                      vehicles_raw = value
+                      break
+
+
+                  if isinstance(value, dict):
+
+                      for subkey in [
+                          "results",
+                          "vehicles",
+                          "inventory",
+                      ]:
+
+                          subvalue = value.get(subkey)
+
+                          if isinstance(subvalue, list):
+
+                              vehicles_raw = subvalue
+                              break
+
+                      if vehicles_raw:
+                          break
+
+
+          print(
+              "Objets véhicules reçus :",
+              len(vehicles_raw)
+          )
+
+
+          # ============================================================
+          # NORMALISATION
+          # ============================================================
 
           vehicles = []
 
 
-          # On recherche les liens de véhicules.
-          # Tesla-info peut modifier légèrement sa structure :
-          # on utilise donc plusieurs méthodes de détection.
+          for raw_vehicle in vehicles_raw:
 
-          for link in soup.find_all("a", href=True):
-
-              href = link.get("href", "").strip()
-
-              text = " ".join(
-                  link.stripped_strings
-              ).strip()
-
-              if not text:
-                  continue
-
-              absolute_url = urljoin(
-                  SOURCE_URL,
-                  href,
-              )
-
-              lower_text = text.lower()
-
-              # --------------------------------------------------------
-              # Détection du modèle
-              # --------------------------------------------------------
-
-              model = None
-
-              for candidate in MODELS:
-                  if candidate.lower() in lower_text:
-                      model = candidate
-                      break
-
-              if model is None:
+              if not isinstance(raw_vehicle, dict):
                   continue
 
 
-              # --------------------------------------------------------
-              # On évite les liens de navigation
-              # --------------------------------------------------------
+              model = normalize_model(raw_vehicle)
 
-              if "/inventory/" not in absolute_url.lower():
+
+              if model not in MODELS:
                   continue
 
 
-              # --------------------------------------------------------
-              # Recherche du prix
-              # --------------------------------------------------------
-
-              price_match = re.search(
-                  r"(\d[\d\s.,]{2,})\s*€",
-                  text
-              )
-
-              price = ""
-
-              if price_match:
-                  price = price_match.group(1).strip() + " €"
-
-
-              # --------------------------------------------------------
-              # Identification unique
-              # --------------------------------------------------------
-
-              unique_source = (
-                  absolute_url
-                  + "|"
-                  + text
-              )
-
-              vehicle_id = hashlib.sha256(
-                  unique_source.encode("utf-8")
-              ).hexdigest()
-
-
-              vehicles.append({
-                  "id": vehicle_id,
+              vehicle = {
+                  "id": vehicle_id(
+                      raw_vehicle,
+                      model
+                  ),
                   "model": model,
-                  "text": text,
-                  "url": absolute_url,
-                  "price": price,
-              })
+                  "price": extract_price(raw_vehicle),
+                  "raw": raw_vehicle,
+              }
+
+
+              vehicles.append(vehicle)
 
 
           # ============================================================
-          # SUPPRESSION DES DOUBLONS
+          # DOUBLONS
           # ============================================================
 
           unique = {}
 
           for vehicle in vehicles:
+
               unique[vehicle["id"]] = vehicle
+
 
           vehicles = list(unique.values())
 
 
           print()
-          print("Véhicules détectés :", len(vehicles))
-          print()
+          print(
+              "Tesla neuves détectées :",
+              len(vehicles)
+          )
+
+
+          for vehicle in vehicles:
+
+              print(
+                  "-",
+                  vehicle["model"],
+                  vehicle["price"],
+                  vehicle["id"][:12]
+              )
 
 
           # ============================================================
@@ -286,7 +513,11 @@ jobs:
 
           seen = load_seen()
 
-          print("Véhicules déjà vus :", len(seen))
+          print()
+          print(
+              "Configurations déjà vues :",
+              len(seen)
+          )
 
 
           new_vehicles = [
@@ -299,32 +530,33 @@ jobs:
           # ============================================================
           # PREMIERE EXECUTION
           # ============================================================
-          #
-          # Important :
-          # lors du premier lancement, on mémorise les voitures
-          # existantes sans envoyer 50 alertes Telegram.
-          #
 
           if not seen:
 
               print()
               print("ℹ️ Première exécution.")
-              print("Les véhicules actuels sont mémorisés.")
-              print("Aucune alerte massive ne sera envoyée.")
+              print(
+                  "Les disponibilités actuelles "
+                  "sont mémorisées."
+              )
 
               for vehicle in vehicles:
                   seen.add(vehicle["id"])
 
               save_seen(seen)
 
+
           else:
 
               print()
-              print("🆕 Nouveaux véhicules :", len(new_vehicles))
+              print(
+                  "🆕 Nouvelles disponibilités :",
+                  len(new_vehicles)
+              )
 
 
               # ========================================================
-              # ALERTES
+              # TELEGRAM
               # ========================================================
 
               for vehicle in new_vehicles:
@@ -334,14 +566,17 @@ jobs:
                       f"🚗 {vehicle['model']}\n"
                   )
 
+
                   if vehicle["price"]:
+
                       message += (
                           f"💰 {vehicle['price']}\n"
                       )
 
+
                   message += (
-                      f"\n📋 {vehicle['text']}\n\n"
-                      f"🔗 {vehicle['url']}"
+                      "\n🔗 "
+                      "https://www.tesla.com/fr_fr/inventory"
                   )
 
 
@@ -360,13 +595,19 @@ jobs:
 
 
           # ============================================================
-          # SAUVEGARDE DANS GITHUB
+          # SAUVEGARDE GITHUB
           # ============================================================
 
           subprocess.run(
-              ["git", "config", "user.name", "Tesla Hunter"],
+              [
+                  "git",
+                  "config",
+                  "user.name",
+                  "Tesla Hunter",
+              ],
               check=True,
           )
+
 
           subprocess.run(
               [
@@ -380,7 +621,11 @@ jobs:
 
 
           subprocess.run(
-              ["git", "add", STATE_FILE],
+              [
+                  "git",
+                  "add",
+                  STATE_FILE,
+              ],
               check=True,
           )
 
@@ -407,18 +652,28 @@ jobs:
                   check=True,
               )
 
+
               subprocess.run(
-                  ["git", "push"],
+                  [
+                      "git",
+                      "push",
+                  ],
                   check=True,
               )
 
+
               print()
-              print("✅ Etat sauvegardé dans GitHub.")
+              print(
+                  "✅ Etat sauvegardé dans GitHub."
+              )
+
 
           else:
 
               print()
-              print("ℹ️ Aucun changement à sauvegarder.")
+              print(
+                  "ℹ️ Aucun changement à sauvegarder."
+              )
 
 
           print()
